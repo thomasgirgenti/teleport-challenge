@@ -26,3 +26,5 @@ This repo is split into 3 main subdirectories:
   - possible errors and how they will be handled 
   - required dependencies (crypto, tls, grpc, cli?, etc)
   - data struct for storing output in memory
+- Stop command should immediately kill the child process with SIGKILL
+- Server shutdown should immediately stop all child processess with SIGKILL
