@@ -1,4 +1,4 @@
-# Design Doc: Job Worker Service
+# Design Doc
 
 ## 1. Overview
 
@@ -40,7 +40,7 @@ Out of scope:
 ```go
 // Manager owns the jobs, with concurrency safety
 type Manager struct {
-    mu     sync.RWMutex
+    mu     sync.RWMutex // guards the `jobs` map and `closed`
     jobs   map[string]*Job
     closed bool
 }
@@ -48,32 +48,32 @@ type Manager struct {
 func NewManager() *Manager
 
 // Start launches a cmd with args
-func (m *Manager) Start(cmd string, args []string) (*Job, error)
+func (m *Manager) Start(cmd string, args []string) (*Job, error) { }
 
 // Get returns a job by id
-func (m *Manager) Get(id string) (*Job, error)
+func (m *Manager) Get(id string) (*Job, error) { }
 
 // List enumerates all jobs (current and completed)
-func (m *Manager) List() ([]*Job, error)
+func (m *Manager) List() ([]*Job, error) { }
 
 // Shutdown rejects new jobs, stops running jobs, and stops the worker
-func (m *Manager) Shutdown(ctx context.Context) error
+func (m *Manager) Shutdown(ctx context.Context) error { }
 
 type Job struct { /* defined under Process Lifecycle */ }
 
-func (j *Job) ID() string
-func (j *Job) Owner() string
-func (j *Job) Status() Status
+func (j *Job) ID() string { }
+func (j *Job) Owner() string { }
+func (j *Job) Status() Status { }
 
 // Stop SIGKILLs the job's process group and waits until the job reaches a terminal state or ctx is done (timeout)
-func (j *Job) Stop(ctx context.Context) error
+func (j *Job) Stop(ctx context.Context) error { }
 
 // Output returns a reader of job's entire output from the first byte
 // Each call returns an independent reader
-func (j *Job) Output(ctx context.Context) io.Reader
+func (j *Job) Output(ctx context.Context) io.Reader { }
 
 // Done is closed when the job has reached a terminal state
-func (j *Job) Done() <-chan struct{}
+func (j *Job) Done() <-chan struct{} { }
 
 type Status struct { /* Defined under Process Lifecycle */}
 ```
@@ -84,19 +84,17 @@ Append-only byte buffer with a broadcast notification channel:
 
 ```go
 type OutputBuffer struct {
-    mu     sync.Mutex    // locking mechanism for concurrency safety on Write, Close, and readAt
+    mu     sync.Mutex    // guards `data`, `closed`, and `notify`
     data   []byte        // append-only array of all job output
     closed bool          // true when the job's pipe hits EOF
     notify chan struct{} // closed and replaced on every Write and Close
 }
 
 // Write appends new bytes to `data`, notifies waiting readers w/ `close(b.notify)`, and replaces `notify` with a new channel
-// Holds lock while writing/notifying
 func (b *OutputBuffer) Write(p []byte) error { }
 
 // Close is called when a job's pipe hits EOF and sets `b.closed` to true
 // Prevents new logs from being appended and signals to readers that there will be no new output
-// Holds lock while setting closed/notifying
 func (b *OutputBuffer) Close() { }
 
 // readAt copies data at offset into p, returns # bytes copied
@@ -129,7 +127,7 @@ func (r *OutputReader) Read(p []byte) (int, error) { }
 
 **Alternatives considered:**
 
-- `sync.Cond`: can't be combined with context cancellation, so cancelling a waiter would need an extra goroutine that calls `Broadcast`. This can be complex to manage and lead to leaks if not handled precisely.
+- `sync.Cond`: can't be combined with context cancellation, so cancelling a waiter would need an extra goroutine that calls `Broadcast`. Complex and may lead to leaks if not handled precisely.
 - Per-subscriber channels (fan-out): the writer would have to block on a slow subscriber or drop data.
 - Ring buffer: breaks the "output from start" requirement.
 
@@ -141,7 +139,8 @@ type Job struct {
     cmd       *exec.Cmd
     output    *outputBuffer
     done      chan struct{} // closed after final state is recorded
-    mu            sync.Mutex
+	
+    mu            sync.Mutex // guards the state fields below
     state         State
     exitCode      int
     signal        syscall.Signal
@@ -175,7 +174,7 @@ type Status struct {
 
 **Starting a job** (`Manager.Start`):
 
-1. Reject the call if `cmd == ""`, or with `ErrShuttingDown` if the manager is closed.
+1. Reject the call if `cmd == ""` or if the manager is closed (shutting down).
 2. Build an [`exec.Cmd`](https://pkg.go.dev/os/exec#Cmd).
 3. Call `cmd.Start()`. On failure, no job is registered and the error is returned to the caller.
 4. Register the job under `manager.jobs`, then start a single waiter goroutine:
@@ -185,17 +184,10 @@ type Status struct {
 ```go
 go func(job *Job) { 
 	// block until leader exits
-	// get lock on job
 	// reap orphaned group members
-	// release job lock
-	
 	// reap leader
 	// readers drain remaining output, then get io.EOF
-	
-	// get lock on job
 	// update job state, exit code / signal / endedAt
-	// unlock job
-	
 	// close(job.done)
 }(j)
 ```
@@ -204,12 +196,9 @@ go func(job *Job) {
 
 ```go
 func (j *Job) Stop(ctx context.Context) error {
-	// get lock on job
 	// if job.leaderExited, release job and return ErrNotRunning
 	// set job.stopRequested = true
 	// kill process group with SIGKILL
-	// unlock job
-	
 	// return when job.done is signaled or on timeout (ctx.Done)
 }
 ```
@@ -308,9 +297,9 @@ message ListJobsResponse {
 
 ### Networking
 
-- **Keepalive:** Server sets `keepalive.ServerParameters{Time: 30s, Timeout: 10s}` and client sets matching params. A dead client on a long-running` logs` stream is detected within ~40s. Its stream context is then cancelled so nothing leaks.
-- **Timeouts:** CLI unary calls use a 10s timeout (matching server req timeout). The output stream has no timeout because it lives as long as the job. It is canceled by Ctrl-C through `signal.NotifyContext`.
-- **Server shutdown** on `SIGINT`/`SIGTERM`: `manager.Shutdown(ctx)` kills all jobs. Their buffers close, so every open stream ends naturally with `OK`. Then `grpcServer.GracefulStop()` runs with a fallback to `Stop()`.
+- Keepalive: Server sets `keepalive.ServerParameters{Time: 30s, Timeout: 10s}` and client sets matching params.
+- Timeouts: CLI unary calls use a 10s timeout (matching server req timeout). Output stream has no timeout because it lives as long as the job.
+- Server shutdown on `SIGINT`/`SIGTERM`: `manager.Shutdown(ctx)` kills all jobs. Their output buffers close, so every open stream ends with `OK`. Then `grpcServer.GracefulStop()` runs with a fallback to `Stop()`.
 
 ---
 
@@ -324,7 +313,7 @@ message ListJobsResponse {
 
 ### Certificates
 
-A small bootstrap tool (run w/ `make certs`) will use only `crypto/x509` and generate the following:
+A bootstrap command will use only `crypto/x509` and generate the following:
 
 | Cert                    | Key         | Key usage         | Ext key usage | Subject / SAN                             |
 |-------------------------|-------------|-------------------|---------------|-------------------------------------------|
@@ -335,14 +324,15 @@ A small bootstrap tool (run w/ `make certs`) will use only `crypto/x509` and gen
 | Client leaf `bob`       | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=bob, OU=user`                         |
 | Client leaf `rogue`     | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=rogue, OU=user`, signed by a rogue CA |
 
-- There are separate server and client CAs. The server trusts only the client CA for client auth, and clients trust only the server CA. A stolen client key can never impersonate the server.
-- Signatures are ECDSA with SHA-256. Serial numbers are 128-bit values from `crypto/rand`.
-- ECDSA P-256 over RSA for smaller/faster keys at roughly the 128-bit security level with universal support.
+**Features:**
+
+- Separate server and client CAs: the server trusts only the client CA for client auth, and clients trust only the server CA. A stolen client key can never impersonate the server.
+- Signatures are ECDSA with SHA-256.
+- ECDSA P-256 for smaller/faster keys (vs RSA) with universal support.
 
 ### TLS Config
 
 Server:
-
 ```go
 &tls.Config{
     MinVersion:       tls.VersionTLS13,
@@ -354,7 +344,6 @@ Server:
 ```
 
 Client:
-
 ```go
 &tls.Config{
     MinVersion:       tls.VersionTLS13,
@@ -365,13 +354,14 @@ Client:
 }
 ```
 
-- **TLS 1.3 only.** We manage both peers, so legacy TLS support is unnecessary.
-- **Key exchange:** uses post-quantum `X25519MLKEM768`. Can include X25519 and P-256 as fallbacks if needed.
-- **Verification:** with `RequireAndVerifyClientCert`, the server rejects connections that lack a client cert chaining to the client CA. The client checks the server cert against the server CA and the `localhost` SAN.
+**Features:**
+- TLS 1.3 only: we manage both peers, so legacy TLS support is unnecessary.
+- Key exchange: uses post-quantum `X25519MLKEM768`. Can add `X25519` and `P-256` as fallbacks if needed.
+- Verification: with `RequireAndVerifyClientCert` the server rejects connections that lack a client cert chaining to the client CA. The client checks the server cert against the server CA and the `localhost` SAN.
 
 ### Authentication and Authorization
 
-Identity extraction happens in a unary and a stream interceptor, so every RPC passes through it:
+Identity extraction happens in a unary and stream interceptor, so every RPC passes through it:
 
 1. `peer.FromContext(ctx)` gives `credentials.TLSInfo`. Will use `State.VerifiedChains[0][0]`to get leaf after verification, not the unverified `PeerCertificates`.
 2. `CN` is the username and must be non-empty.
@@ -388,9 +378,9 @@ OU field is used for simplicity. A production system would put roles in a custom
 | `user`  | allowed  | only jobs where `job.Owner() == identity.User`      |
 
 - `StartJob` records `identity.User` as the job's owner.
-- A non-owner gets `NotFound`, not `PermissionDenied`. The response does not reveal whether a job ID exists.
-- The check runs in a single helper, `authorizedJob(ctx, id)`, which every per-job handler calls.
-- The core library stays unaware of auth, storing `owner` as an opaque string.
+- A non-owner gets `NotFound` when querying a job it doesn't own
+- Authz check runs in a single helper (i.e. `authorizeJob(ctx, id)`) which every per-job handler calls.
+- The core library is unaware of auth, storing `owner` as an opaque string.
 
 ---
 
@@ -412,7 +402,7 @@ Commands:
   stop <job-id>                Kill a running job (SIGKILL)
   status <job-id>              Show job status
   logs <job-id>                Stream output from the start, following until the job ends
-  list                         List jobs (running and finished), oldest first
+  list                         List jobs (running and finished)
 ```
 
 Examples:
@@ -437,17 +427,6 @@ Exit:     0
 Started:  2026-10-09T18:40:01Z
 Ended:    2026-10-09T18:40:04Z
 
-$ teleport start sleep 1000
-RT4L2QW...
-$ teleport stop RT4L2QW...
-$ teleport status RT4L2QW...
-...
-State:    STOPPED
-Signal:   killed
-
-$ teleport stop RT4L2QW...
-error: job is not running
-
 $ teleport list
 ID                          OWNER  STATE     STARTED               COMMAND
 Q5ZJ3KXM7TAB2C4VNWHRY6DPLE  alice  EXITED    2026-10-09T18:40:01Z  bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
@@ -457,11 +436,6 @@ M8D2VKX4PQ7RZ5NBT3WJHC9GYA  bob    RUNNING   2026-10-09T18:42:30Z  tail -f /var/
 # bob (role=user) cannot see alice's jobs
 $ teleport --cert certs/bob.crt --key certs/bob.key status Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 error: job not found
-
-# bob's list shows only bob's own jobs
-$ teleport --cert certs/bob.crt --key certs/bob.key list
-ID                          OWNER  STATE     STARTED               COMMAND
-M8D2VKX4PQ7RZ5NBT3WJHC9GYA  bob    RUNNING   2026-10-09T18:42:30Z  tail -f /var/log/syslog
 
 # Client cert signed by an untrusted CA
 $ teleport --cert certs/eve.crt --key certs/eve.key status Q5ZJ...
@@ -481,7 +455,7 @@ error: unknown certificate authority
 
 ## 7. Future Considerations
 
-| Area           | Current choice                                        | Production path                                                                           |
+| Area           | Current choice                                        | Production alternative                                                                    |
 |----------------|-------------------------------------------------------|-------------------------------------------------------------------------------------------|
 | Output storage | Unbounded in-memory `[]byte`                          | Chunked buffer, size caps per job, spill to disk, retention and eviction of finished jobs |
 | Configuration  | Hardcoded address, paths, timeouts; minimal CLI flags | Config file and env vars                                                                  |
