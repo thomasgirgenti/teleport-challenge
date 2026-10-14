@@ -48,7 +48,10 @@ type Manager struct {
 func NewManager() *Manager
 
 // Start launches a cmd with args
-func (m *Manager) Start(cmd string, args []string) (*Job, error) { }
+func (m *Manager) Start(cmd string, args []string) (*Job, error) {
+    // TODO: enforce limit for max # running jobs. runtime has 10k thread limit
+	...
+}
 
 // Get returns a job by id
 func (m *Manager) Get(id string) (*Job, error) { }
@@ -209,10 +212,7 @@ type Status struct {
 output := outputBuffer{...}
 c := &exec.Cmd{
     Path: path,
-    Args: append([]string{cmd}, args...), 
-
-    // Set to something minimal so the server's env, which may contain secrets, is not inherited
-    Env: []string{"PATH=/usr/local/bin"},
+    Args: append([]string{cmd}, args...),
 
     // Child reads from /dev/null
     Stdin: nil,
@@ -225,8 +225,6 @@ c := &exec.Cmd{
     SysProcAttr: &syscall.SysProcAttr{
         // The child leads its own process group (pgid == pid), so Stop kills its whole tree
         Setpgid: true,
-        // If the server dies unexpectedly, the kernel kills the child
-        Pdeathsig: syscall.SIGKILL,
     },
 
     // Backstop so Wait returns even if a descendant that escaped the process group keeps the pipe open.
