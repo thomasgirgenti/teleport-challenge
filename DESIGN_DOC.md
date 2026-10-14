@@ -23,7 +23,7 @@ Out of scope:
 - Persistence - jobs and output live in memory only and are lost when the server restarts.
 - Configuration system - addresses, paths, timeouts, etc. are hardcoded constants.
 - Certificate lifecycle management (PKI).
-- RBAC - for our current purposes two roles will exist: `admin` and `user`. `admin` role will be able to manage any job, while `user` can only stream/stop/query jobs they own.
+- RBAC - users will be able to interact w/ only the jobs they've started/own.
 
 ### Assumptions
 
@@ -40,8 +40,8 @@ Out of scope:
 ```go
 // Manager owns the jobs, with concurrency safety
 type Manager struct {
-    mu     sync.RWMutex // guards the `jobs` map and `closed`
-    jobs   map[string]*Job
+    mu     sync.Mutex // guards the `jobs` map and `closed`
+    jobs   map[string]*Job // key is job id generated w/ crypto/rand.Text()
     closed bool
 }
 
@@ -52,9 +52,6 @@ func (m *Manager) Start(cmd string, args []string) (*Job, error) { }
 
 // Get returns a job by id
 func (m *Manager) Get(id string) (*Job, error) { }
-
-// List enumerates all jobs (current and completed)
-func (m *Manager) List() ([]*Job, error) { }
 
 // Shutdown rejects new jobs, stops running jobs, and stops the worker
 func (m *Manager) Shutdown(ctx context.Context) error { }
@@ -70,6 +67,10 @@ func (j *Job) Stop(ctx context.Context) error { }
 
 // Output returns a reader of job's entire output from the first byte
 // Each call returns an independent reader
+
+// Output returns a reader of the job's combined stdout and stderr from the first byte
+// Read blocks until new data is available, the job ends (io.EOF), or ctx is done (ctx.Err()). 
+// Each call returns an independent reader.
 func (j *Job) Output(ctx context.Context) io.Reader { }
 
 // Done is closed when the job has reached a terminal state
@@ -83,7 +84,7 @@ type Status struct { /* Defined under Process Lifecycle */}
 Append-only byte buffer with a broadcast notification channel:
 
 ```go
-type OutputBuffer struct {
+type outputBuffer struct {
     mu     sync.Mutex    // guards `data`, `closed`, and `notify`
     data   []byte        // append-only array of all job output
     closed bool          // true when the job's pipe hits EOF
@@ -91,15 +92,25 @@ type OutputBuffer struct {
 }
 
 // Write appends new bytes to `data`, notifies waiting readers w/ `close(b.notify)`, and replaces `notify` with a new channel
-func (b *OutputBuffer) Write(p []byte) error { }
+func (b *outputBuffer) Write(p []byte) (n int, err error) { }
 
 // Close is called when a job's pipe hits EOF and sets `b.closed` to true
 // Prevents new logs from being appended and signals to readers that there will be no new output
-func (b *OutputBuffer) Close() { }
+func (b *outputBuffer) Close() { }
 
 // readAt copies data at offset into p, returns # bytes copied
 // If there is no data at offset, returns `b.notify` so readers are notified when new output is available
-func (b *OutputBuffer) readAt(p []byte, offset int) (int, <-chan struct{}, error) { }
+func (b *outputBuffer) readAt(p []byte, offset int) (int, <-chan struct{}, error) {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    if off < len(b.data) {
+        return copy(p, b.data[off:]), nil, nil
+    }
+    if b.closed {
+        return 0, nil, io.EOF
+    }
+    return 0, b.notify, nil
+}
 ```
 
 Each reader tracks its own offset:
@@ -113,22 +124,40 @@ type OutputReader struct {
 
 // Read copies output from offset into p and increases r.offset
 // Blocks on r.buf.notify if there is nothing to read
-func (r *OutputReader) Read(p []byte) (int, error) { }
+func (r *OutputReader) Read(p []byte) (int, error) {
+    if len(p) == 0 {
+        return 0, nil
+    }
+    for {
+        n, wait, err := r.buf.readAt(p, r.off)
+        if n > 0 || err != nil {
+            r.off += n
+            return n, err
+        }
+        select {
+        case <-wait:          // new data or EOF; loop and re-check
+        case <-r.ctx.Done():
+            return 0, r.ctx.Err()
+		}
+    }
+}
 ```
 
 **Features of this output structure:**
 
 - Output is stored from start of job execution and never truncated
 - Readers do not sleep and re-check; a reader with nothing to read waits until new output becomes available (via notify channel). `Write` wakes every waiting reader exactly once by closing the channel.
-- Multiple concurrent clients at little cost: Readers share the buffer read-only and keep their own offsets. Adding a reader costs O(1) and needs no registration/cleanup.
+- Multiple concurrent clients at little cost: Readers share the buffer read-only and keep their own offsets. Adding a reader costs O(1) and needs no manual registration and cleanup.
 - Data is handled as `[]byte`, so it is binary safe w/ no encoding assumptions
 - `Write` doesn't wait for readers. A slow gRPC client only falls behind on its own offset. A job is never blocked by a consumer.
 - Readers start no goroutines, so there is nothing to close. Cancelling the context unblocks a waiting `Read` right away. Minimizes risk of goroutine leaks.
 
 **Alternatives considered:**
 
-- `sync.Cond`: can't be combined with context cancellation, so cancelling a waiter would need an extra goroutine that calls `Broadcast`. Complex and may lead to leaks if not handled precisely.
-- Per-subscriber channels (fan-out): the writer would have to block on a slow subscriber or drop data.
+- `sync.Cond`: `Wait` ignores contexts, so cancellation needs a `context.AfterFunc` that locks before `Broadcast` and wakes every waiter. A closed channel in a `select` with `ctx.Done()` does the same thing more simply.
+- Per-subscriber channels (fan-out)
+    - Fanning out data forces the writer to block on a slow subscriber or drop data.
+    - Fanning out notifications instead (a 1-buffered `chan struct{}` per reader, non-blocking send) avoids that, but needs a subscriber registry with register/unregister on every reader. Closing a shared channel gives the same wakeups with no registry.
 - Ring buffer: breaks the "output from start" requirement.
 
 ### Process Lifecycle
@@ -174,32 +203,120 @@ type Status struct {
 
 **Starting a job** (`Manager.Start`):
 
-1. Reject the call if `cmd == ""` or if the manager is closed (shutting down).
-2. Build an [`exec.Cmd`](https://pkg.go.dev/os/exec#Cmd).
-3. Call `cmd.Start()`. On failure, no job is registered and the error is returned to the caller.
+1. Reject the call if `cmd == ""`, the user-provided command is not found (check `exec.LookPath(cmd)`), or the manager is closed (shutting down).
+2. Build an [`exec.Cmd`](https://pkg.go.dev/os/exec#Cmd):
+```go
+output := outputBuffer{...}
+c := &exec.Cmd{
+    Path: path,
+    Args: append([]string{cmd}, args...), 
+
+    // Set to something minimal so the server's env, which may contain secrets, is not inherited
+    Env: []string{"PATH=/usr/local/bin"},
+
+    // Child reads from /dev/null
+    Stdin: nil,
+
+    // Same writer for both, so os/exec gives the child a single pipe for fd 1 and fd 2
+    // stdout/stderr interleaving is preserved as the child wrote it
+    Stdout: &output,
+    Stderr: &output,
+
+    SysProcAttr: &syscall.SysProcAttr{
+        // The child leads its own process group (pgid == pid), so Stop kills its whole tree
+        Setpgid: true,
+        // If the server dies unexpectedly, the kernel kills the child
+        Pdeathsig: syscall.SIGKILL,
+    },
+
+    // Backstop so Wait returns even if a descendant that escaped the process group keeps the pipe open.
+    // Real containment of escaped descendants needs cgroups (Level 5).
+    WaitDelay: 2 * time.Second,
+}
+```
+3. Call `c.Start()`. On failure, no job is registered and the error is returned to the caller.
 4. Register the job under `manager.jobs`, then start a single waiter goroutine:
 
 **Waiter goroutine.** This is the only goroutine per job:
 
 ```go
-go func(job *Job) { 
-	// block until leader exits
-	// reap orphaned group members
-	// reap leader
-	// readers drain remaining output, then get io.EOF
-	// update job state, exit code / signal / endedAt
-	// close(job.done)
-}(j)
+// go j.wait() is called from Manager.Start after cmd.Start() succeeds.
+func (j *Job) wait() {
+    defer close(j.done)
+
+    // Since leader started with Setpgid, pid == pgid
+    pgid := j.cmd.Process.Pid
+
+    // Block until the leader exits, leave it unreaped (WNOWAIT).
+    var info unix.Siginfo
+    for {
+        err := unix.Waitid(unix.P_PID, pgid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+        if err != unix.EINTR {
+            break // other errors resurface from cmd.Wait below
+        }
+    }
+
+    // Kill group members left behind. They were reparented to init, which reaps them.
+    // Stop checks leaderExited under the same lock, so it never signals the group after the reap below.
+    j.mu.Lock()
+    j.leaderExited = true
+    _ = unix.Kill(-pgid, unix.SIGKILL)
+    j.mu.Unlock()
+
+    // Reap the leader and wait for the output copy to reach EOF.
+    // If a process that left the group still holds the pipe, WaitDelay closes it so this won't hang.
+    // ProcessState is set once the leader is reaped, even if Wait also returns ErrWaitDelay.
+    _ = j.cmd.Wait()
+
+    // Readers drain the remaining output, then get io.EOF.
+    j.output.Close()
+
+
+    // Update job endedAt, state, signal, exitStatus under j.mu.Lock()
+    j.mu.Lock()
+    defer j.mu.Unlock()
+    j.endedAt = time.Now()
+    ws := j.cmd.ProcessState.Sys().(syscall.WaitStatus)
+    switch {
+    case ws.Signaled() && j.stopRequested:
+        j.state, j.signal = StateStopped, ws.Signal()
+    case ws.Signaled():
+        j.state, j.signal = StateSignaled, ws.Signal()
+    default:
+        j.state, j.exitCode = StateExited, ws.ExitStatus()
+    }
+}
 ```
 
 **Stopping a job** (`Job.Stop`):
 
 ```go
 func (j *Job) Stop(ctx context.Context) error {
-	// if job.leaderExited, release job and return ErrNotRunning
-	// set job.stopRequested = true
-	// kill process group with SIGKILL
-	// return when job.done is signaled or on timeout (ctx.Done)
+    // Hold j.mu across the kill.
+	// wait() goroutine sets leaderExited under the same lock before reaping the leader, so the pgid can't be reused while we signal it.
+    j.mu.Lock()
+    if j.leaderExited {
+        j.mu.Unlock()
+        return ErrNotRunning
+    }
+
+    // Set before the kill so wait() records StateStopped rather than StateSignaled.
+    j.stopRequested = true
+
+    // Since leader started with Setpgid, pid == pgid
+    err := unix.Kill(-j.cmd.Process.Pid, unix.SIGKILL)
+    j.mu.Unlock()
+    if err != nil {
+        return err
+    }
+
+    // Return once wait() has recorded the final state, or when ctx is done (timeout).
+    select {
+    case <-j.done:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
 }
 ```
 
@@ -233,8 +350,6 @@ service WorkerService {
   rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
 
   rpc StreamJobOutput(StreamJobOutputRequest) returns (stream StreamJobOutputResponse);
-
-  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
 }
 
 message StartJobRequest {
@@ -287,13 +402,45 @@ message JobStatus {
   google.protobuf.Timestamp started_at = 8;
   google.protobuf.Timestamp ended_at = 9;
 }
+```
 
-message ListJobsRequest {}
+### Output Streaming
 
-message ListJobsResponse {
-  repeated JobStatus jobs = 1;
+A `StreamJobOutput` handler reads from its own `OutputReader` into a fixed 32 KiB buffer and sends each `Read` result as one message:
+
+```go
+func (s *server) StreamJobOutput(req *pb.StreamJobOutputRequest, stream grpc.ServerStreamingServer[pb.StreamJobOutputResponse]) error {
+    // NotFound for unknown jobs and jobs the caller doesn't own
+    job, err := s.authorizeJob(stream.Context(), req.GetJobId())
+    if err != nil {
+        return err
+    }
+
+    buf := make([]byte, 32*1024)
+    r := job.Output(stream.Context())
+    for {
+        n, err := r.Read(buf)
+        if n > 0 {
+            if err := stream.Send(&pb.StreamJobOutputResponse{Data: buf[:n]}); err != nil {
+                return err
+            }
+        }
+        if err == io.EOF {
+            return nil // job ended and all output was sent
+        }
+        if err != nil {
+            return err // ctx cancelled: client went away or server is stopping
+        }
+    }
 }
 ```
+
+- A chunk contains the data between a reader's offset and the end of the buffer, up to 32 KiB.
+    - A reader catching up gets full 32 KiB chunks; a live reader gets one small message per `Write`, with no batching delay.
+- Chunk boundaries don't align with lines, UTF-8 characters, or the job's writes. The client appends `data` to stdout in order.
+- 32 KiB stays well under gRPC's default 4 MiB max receive message size and bounds per-stream memory.
+- `buf` is reused safely because `Send` serializes the message before returning.
+- `Send` blocks under HTTP/2 flow control when a client is slow. That only holds back this reader's offset; the job and other readers are unaffected.
 
 ### Networking
 
@@ -315,14 +462,13 @@ message ListJobsResponse {
 
 A bootstrap command will use only `crypto/x509` and generate the following:
 
-| Cert                    | Key         | Key usage         | Ext key usage | Subject / SAN                             |
-|-------------------------|-------------|-------------------|---------------|-------------------------------------------|
-| Server CA (self-signed) | ECDSA P-256 | CertSign, CRLSign | —             | `CN=worker-server-ca`                     |
-| Client CA (self-signed) | ECDSA P-256 | CertSign, CRLSign | —             | `CN=worker-client-ca`                     |
-| Server leaf             | ECDSA P-256 | DigitalSignature  | ServerAuth    | SAN: `localhost`, `127.0.0.1`, `::1`      |
-| Client leaf `alice`     | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=alice, OU=admin`                      |
-| Client leaf `bob`       | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=bob, OU=user`                         |
-| Client leaf `rogue`     | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=rogue, OU=user`, signed by a rogue CA |
+| Cert                    | Key         | Key usage         | Ext key usage | Subject / SAN                        |
+|-------------------------|-------------|-------------------|---------------|--------------------------------------|
+| Server CA (self-signed) | ECDSA P-256 | CertSign, CRLSign | —             | `CN=worker-server-ca`                |
+| Client CA (self-signed) | ECDSA P-256 | CertSign, CRLSign | —             | `CN=worker-client-ca`                |
+| Server leaf             | ECDSA P-256 | DigitalSignature  | ServerAuth    | SAN: `localhost`, `127.0.0.1`, `::1` |
+| Client leaf `alice`     | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=alice`                           |
+| Client leaf `bob`       | ECDSA P-256 | DigitalSignature  | ClientAuth    | `CN=bob`                             |
 
 **Features:**
 
@@ -339,7 +485,6 @@ Server:
     Certificates:     []tls.Certificate{serverCert},
     ClientAuth:       tls.RequireAndVerifyClientCert,
     ClientCAs:        clientCAPool,
-    CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
 }
 ```
 
@@ -350,52 +495,90 @@ Client:
     Certificates:     []tls.Certificate{clientCert},
     RootCAs:          serverCAPool,
     ServerName:       "localhost",
-    CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
 }
 ```
 
 **Features:**
 - TLS 1.3 only: we manage both peers, so legacy TLS support is unnecessary.
-- Key exchange: uses post-quantum `X25519MLKEM768`. Can add `X25519` and `P-256` as fallbacks if needed.
 - Verification: with `RequireAndVerifyClientCert` the server rejects connections that lack a client cert chaining to the client CA. The client checks the server cert against the server CA and the `localhost` SAN.
 
 ### Authentication and Authorization
 
-Identity extraction happens in a unary and stream interceptor, so every RPC passes through it:
+The client identity is fixed for the lifetime of a connection, so it is extracted once, at the TLS handshake, by wrapping the TLS transport credentials:
 
-1. `peer.FromContext(ctx)` gives `credentials.TLSInfo`. Will use `State.VerifiedChains[0][0]`to get leaf after verification, not the unverified `PeerCertificates`.
-2. `CN` is the username and must be non-empty.
-3. `OU` is the role. It must contain exactly one value, and that value must be one of `admin` or `user` (placeholder roles). Otherwise the RPC is rejected with `PermissionDenied`.
-4. Store an `Identity{User, Role}` in the context under an unexported key type.
+```go
+// authInfo embeds TLSInfo so AuthType() and grpc's security-level checks keep working
+type authInfo struct {
+    credentials.TLSInfo
+    User string
+}
 
-OU field is used for simplicity. A production system would put roles in a custom X.509 extension OID.
+// identityCreds wraps credentials.NewTLS(serverTLSConfig)
+type identityCreds struct {
+    credentials.TransportCredentials
+}
+
+// ServerHandshake is called by grpc once per accepted connection, before any RPC on it
+func (c identityCreds) ServerHandshake(raw net.Conn) (net.Conn, credentials.AuthInfo, error) {
+    conn, info, err := c.TransportCredentials.ServerHandshake(raw)
+    if err != nil {
+        return nil, nil, err
+    }
+    tlsInfo := info.(credentials.TLSInfo)
+
+    user, err := userFromCert(tlsInfo.State.VerifiedChains[0][0])
+    if err != nil {
+        conn.Close()
+        return nil, nil, err // connection is refused; no RPC runs on it
+    }
+    return conn, authInfo{TLSInfo: tlsInfo, User: user}, nil
+}
+
+// Clone must return the wrapper, or the embedded Clone would drop it
+func (c identityCreds) Clone() credentials.TransportCredentials {
+    return identityCreds{c.TransportCredentials.Clone()}
+}
+
+// userFrom is what handlers call: one type assertion, no certificate parsing per RPC
+func userFrom(ctx context.Context) (string, bool) {
+    p, ok := peer.FromContext(ctx)
+    if !ok {
+        return "", false
+    }
+    ai, ok := p.AuthInfo.(authInfo)
+    return ai.User, ok
+}
+```
+
+`userFromCert` rules:
+1. Use `State.VerifiedChains[0][0]` to get the leaf after verification, not the unverified `PeerCertificates`. `RequireAndVerifyClientCert` guarantees a verified chain exists once the TLS handshake succeeds.
+2. `CN` is the username and must be non-empty. Otherwise the handshake fails.
+
+Notes:
+- grpc attaches the connection's `AuthInfo` to every RPC via `peer`, so nothing is added to the context per RPC and no identity interceptor is needed.
+- A client with an invalid cert sees a failed connection (`Unavailable`, "authentication handshake failed") rather than a per-RPC error.
+- Reconnecting runs a new handshake, so a changed cert is picked up on the next connection.
 
 **Authorization policy:**
 
-| Role    | StartJob | StopJob / GetJobStatus / StreamJobOutput / ListJobs |
-|---------|----------|-----------------------------------------------------|
-| `admin` | allowed  | any job                                             |
-| `user`  | allowed  | only jobs where `job.Owner() == identity.User`      |
-
-- `StartJob` records `identity.User` as the job's owner.
-- A non-owner gets `NotFound` when querying a job it doesn't own
-- Authz check runs in a single helper (i.e. `authorizeJob(ctx, id)`) which every per-job handler calls.
-- The core library is unaware of auth, storing `owner` as an opaque string.
+- `StartJob` records `User` as the job's owner.
+- A non-owner gets `NotFound` when querying/stopping/streaming a job it doesn't own
+- Authz check runs in a single helper (i.e. `authorizeJob(ctx, id)`) which every per-job handler calls. It reads the caller with `userFrom(ctx)`.
 
 ---
 
 ## 5. CLI UX
 
-The CLI binary is `teleport`.
+The CLI binary is `jobctl`.
 - uses the standard library `flag` package with one `FlagSet` per subcommand
 - global flags come before the subcommand
 
 ```
-teleport [--addr localhost:50051] \
-         [--cert certs/alice.crt] \
-         [--key certs/alice.key] \
-         [--ca certs/server-ca.crt] \
-         <command> [args]
+jobctl [--addr localhost:50051] \
+       [--cert certs/alice.crt] \
+       [--key certs/alice.key] \
+       [--ca certs/server-ca.crt] \
+       <command> [args]
 
 Commands:
   start [--] <cmd> [args...]   Start a job; prints the job ID
@@ -408,17 +591,17 @@ Commands:
 Examples:
 
 ```console
-$ teleport start -- bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
+$ jobctl start -- bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
 Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 
 # returns when the job ends
-$ teleport logs Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
+$ jobctl logs Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 tick 1
 tick 2
 tick 3
 $
 
-$ teleport status Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
+$ jobctl status Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 ID:       Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 Owner:    alice
 Command:  bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
@@ -427,18 +610,12 @@ Exit:     0
 Started:  2026-10-09T18:40:01Z
 Ended:    2026-10-09T18:40:04Z
 
-$ teleport list
-ID                          OWNER  STATE     STARTED               COMMAND
-Q5ZJ3KXM7TAB2C4VNWHRY6DPLE  alice  EXITED    2026-10-09T18:40:01Z  bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
-RT4L2QWX8NB5KZ3MJD7HPC6YVE  alice  STOPPED   2026-10-09T18:41:15Z  sleep 1000
-M8D2VKX4PQ7RZ5NBT3WJHC9GYA  bob    RUNNING   2026-10-09T18:42:30Z  tail -f /var/log/syslog
-
 # bob (role=user) cannot see alice's jobs
-$ teleport --cert certs/bob.crt --key certs/bob.key status Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
+$ jobctl --cert certs/bob.crt --key certs/bob.key status Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 error: job not found
 
 # Client cert signed by an untrusted CA
-$ teleport --cert certs/eve.crt --key certs/eve.key status Q5ZJ...
+$ jobctl --cert certs/eve.crt --key certs/eve.key status Q5ZJ...
 error: unknown certificate authority
 ```
 
@@ -459,7 +636,7 @@ error: unknown certificate authority
 |----------------|-------------------------------------------------------|-------------------------------------------------------------------------------------------|
 | Output storage | Unbounded in-memory `[]byte`                          | Chunked buffer, size caps per job, spill to disk, retention and eviction of finished jobs |
 | Configuration  | Hardcoded address, paths, timeouts; minimal CLI flags | Config file and env vars                                                                  |
-| AuthZ roles    | X.509 `OU` with two roles                             | Custom cert extension, RBAC with per-command allow-lists                                  |
+| AuthZ roles    | None                                                  | Custom cert extension, RBAC with per-command allow-lists                                  |
 | PKI            | Offline dev CA via `make certs`                       | Online CA issuing short-lived certs, revocation, rotation                                 |
 | Isolation      | Process group + `Pdeathsig`                           | cgroups v2 (CPU/memory/IO limits), namespaces, unprivileged uid per job (Level 5)         |
 | Availability   | Single process, in-memory state, lost on restart      | Persist job metadata and output; multiple workers behind a scheduler                      |
