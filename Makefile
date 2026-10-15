@@ -2,6 +2,8 @@ GO_IMAGE := golang:1.27
 
 .PHONY: test test-linux vet fmt
 
+default: fmt test-linux
+
 # Run all tests with race detection. Requires Linux.
 test:
 	go test -race -count=1 ./...
