@@ -156,21 +156,14 @@ func (j *Job) kill() error {
 
 // wait is the job's only goroutine.
 // It waits for the process to exit, kills any processes left in its group, captures the remaining output, and records the final state.
+// TODO: use cgroups to more effectively manage job & child process lifecycles
 func (j *Job) wait() {
 	defer close(j.done)
 
 	pgid := j.cmd.Process.Pid
 
-	// Block until the leader exits, but leave it unreaped (WNOWAIT) so its pid/pgid can't be reused while kill may still signal it.
-	var info unix.Siginfo
-	for {
-		// unix.Waitid with WNOWAIT breaks macOS compatibility :(
-		// TODO: Identify an alternative mechanism to wait for leader to exit w/o reaping that is multi-platform compatible.
-		err := unix.Waitid(unix.P_PID, pgid, &info, unix.WEXITED|unix.WNOWAIT, nil)
-		if !errors.Is(err, unix.EINTR) {
-			break // other errors resurface from cmd.Wait below
-		}
-	}
+	// Block until the process group leader exits w/o reaping -- prevents pgid reuse before kill signal is issued
+	j.waitOnLeader(pgid)
 
 	// Kill group members left behind. They were reparented to init, which reaps them.
 	j.mu.Lock()
@@ -208,5 +201,22 @@ func (j *Job) recordExit() {
 		j.state, j.signal = StateSignaled, ws.Signal()
 	default:
 		j.state, j.exitCode = StateExited, ws.ExitStatus()
+	}
+}
+
+// waitOnLeader blocks until the process group leader exits, but leaves it unreaped (WNOWAIT). Ignores EINTR.
+func (j *Job) waitOnLeader(pgid int) {
+
+	// cmd.Wait shouldn't be used here because:
+	// - It reaps the main process (leader) before returning. If the pid/pgid is reissued, an unrelated process group may be killed.
+	// - If a child process holds the output pipe, `cmd.Wait` blocks until WaitDelay expires. When Go closes the pipe, the children processes still need to be killed.
+	var info unix.Siginfo
+	for {
+		// unix.Waitid with WNOWAIT breaks macOS compatibility
+		err := unix.Waitid(unix.P_PID, pgid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		if !errors.Is(err, unix.EINTR) {
+			// retry on EINTR
+			break
+		}
 	}
 }

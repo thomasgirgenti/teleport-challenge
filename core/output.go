@@ -55,7 +55,7 @@ func (b *outputBuffer) readAt(p []byte, off int) (int, <-chan struct{}, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if off < len(b.data) {
-		return copy(p, b.data[off:]), nil, nil
+		return copy(p, b.data[off:]), b.notify, nil
 	}
 	if b.closed {
 		return 0, nil, io.EOF
