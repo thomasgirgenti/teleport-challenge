@@ -7,9 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"maps"
 	"os/exec"
-	"slices"
 	"sync"
 )
 
@@ -81,7 +79,15 @@ func (m *Manager) Get(id string) (*Job, error) {
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	m.closed = true
-	jobs := slices.Collect(maps.Values(m.jobs))
+	var jobs []*Job
+	for _, j := range m.jobs {
+		select {
+		case <-j.done:
+			// Already in a terminal state, so there is nothing to kill or wait for
+		default:
+			jobs = append(jobs, j)
+		}
+	}
 	m.mu.Unlock()
 
 	// Kill every job before waiting on any, so jobs die in parallel
