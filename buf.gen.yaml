@@ -1,0 +1,15 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    # Generated Go code lives under gen/, mirroring the layout of the proto files in api/.
+    - file_option: go_package_prefix
+      value: github.com/thomasgirgenti/teleport-challenge/gen
+plugins:
+  # The Go plugins are pinned as tools in go.mod.
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: gen
+    opt: module=github.com/thomasgirgenti/teleport-challenge/gen
+  - local: ["go", "tool", "protoc-gen-go-grpc"]
+    out: gen
+    opt: module=github.com/thomasgirgenti/teleport-challenge/gen

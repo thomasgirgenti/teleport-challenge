@@ -24,11 +24,8 @@ fmt:
 tidy:
 	go mod tidy
 
-# Generate Go code from the protobuf definitions. Requires protoc; the Go plugins are pinned as tools in go.mod.
+# Lint the protobuf definitions and generate Go code from them. Requires buf; the Go plugins are pinned as tools in go.mod.
+# buf must be installed locally: https://buf.build/docs/cli/installation/
 proto:
-	protoc --proto_path=api \
-		--plugin=protoc-gen-go="$$(go tool -n protoc-gen-go)" \
-		--plugin=protoc-gen-go-grpc="$$(go tool -n protoc-gen-go-grpc)" \
-		--go_out=api --go_opt=paths=source_relative \
-		--go-grpc_out=api --go-grpc_opt=paths=source_relative \
-		api/worker/v1/worker.proto
+	buf lint
+	buf generate

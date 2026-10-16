@@ -1,10 +1,8 @@
-syntax = "proto3";
+edition = "2024";
 
 package worker.v1;
 
 import "google/protobuf/timestamp.proto";
-
-option go_package = "github.com/thomasgirgenti/teleport-challenge/api/worker/v1;workerv1";
 
 // WorkerService runs Linux processes (jobs) on behalf of mTLS-authenticated clients.
 // Callers can only see and act on jobs they own; other jobs are reported as NotFound.
