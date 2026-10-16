@@ -205,7 +205,7 @@ func (j *Job) recordExit() {
 }
 
 // waitOnLeader blocks until the process group leader exits, but leaves it unreaped (WNOWAIT). Ignores EINTR.
-func (j *Job) waitOnLeader(pgid int) {
+func waitOnLeader(pgid int) {
 
 	// cmd.Wait shouldn't be used here because:
 	// - It reaps the main process (leader) before returning. If the pid/pgid is reissued, an unrelated process group may be killed.
