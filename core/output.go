@@ -7,7 +7,8 @@ import (
 )
 
 // outputBuffer is an append-only, in-memory record of a job's output.
-// Readers wait for new data on notify, which is closed and replaced on every Write and on Close, so a single close wakes every waiting reader.
+// Readers wait for new data on notify, which is closed on the next Write or Close, so a single close wakes every waiting reader.
+// notify is allocated lazily, only when a reader needs to wait, so writes with no waiting readers don't allocate a channel.
 // Output is never truncated, since the worker is assumed to have unlimited memory.
 //
 // TODO: In production, store output in fixed-size chunks with a per-job cap, and spill to disk or evict output of finished jobs.
@@ -15,11 +16,11 @@ type outputBuffer struct {
 	mu     sync.Mutex    // guards data, closed, and notify
 	data   []byte        // all output written so far
 	closed bool          // true once the job's output pipe has hit EOF
-	notify chan struct{} // closed and replaced on every Write and Close
+	notify chan struct{} // nil until a reader waits; closed and reset to nil on the next Write or Close
 }
 
 func newOutputBuffer() *outputBuffer {
-	return &outputBuffer{notify: make(chan struct{})}
+	return &outputBuffer{}
 }
 
 // Write appends p to the buffer and notifies every waiting reader. Never blocks on readers.
@@ -33,8 +34,7 @@ func (b *outputBuffer) Write(p []byte) (int, error) {
 		return 0, nil
 	}
 	b.data = append(b.data, p...)
-	close(b.notify)
-	b.notify = make(chan struct{})
+	b.wake()
 	return len(p), nil
 }
 
@@ -46,7 +46,16 @@ func (b *outputBuffer) Close() {
 		return
 	}
 	b.closed = true
-	close(b.notify)
+	b.wake()
+}
+
+// wake closes notify if any reader is waiting on it, and resets it so the next waiter allocates a fresh channel
+// Callers must hold mu
+func (b *outputBuffer) wake() {
+	if b.notify != nil {
+		close(b.notify)
+		b.notify = nil
+	}
 }
 
 // readAt copies data starting at off into p and returns the number of bytes copied.
@@ -59,6 +68,9 @@ func (b *outputBuffer) readAt(p []byte, off int) (int, <-chan struct{}, error) {
 	}
 	if b.closed {
 		return 0, nil, io.EOF
+	}
+	if b.notify == nil {
+		b.notify = make(chan struct{})
 	}
 	return 0, b.notify, nil
 }

@@ -301,8 +301,7 @@ func newFIFO(t *testing.T) string {
 }
 
 // watchProcess opens a pidfd for pid and returns a function that blocks until the process exits.
-// A pidfd keeps referring to the same process even if pid is reused, so call watchProcess while pid is known to be alive.
-// The pidfd becomes readable once the process exits, so a zombie counts as gone: it has been killed and only awaits reaping by init.
+// A pidfd will refer to the same process even if pid is reused, so call watchProcess while pid is known to be alive.
 func watchProcess(t *testing.T, pid int) (waitExit func()) {
 	t.Helper()
 	fd, err := unix.PidfdOpen(pid, 0)
