@@ -583,7 +583,6 @@ Commands:
   stop <job-id>                Kill a running job (SIGKILL)
   status <job-id>              Show job status
   logs <job-id>                Stream output from the start, following until the job ends
-  list                         List jobs (running and finished)
 ```
 
 Examples:
