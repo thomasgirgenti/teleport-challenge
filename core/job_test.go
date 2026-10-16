@@ -6,9 +6,9 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -16,12 +16,13 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestJobExitSuccess(t *testing.T) {
 	j := mustStart(t, newTestManager(t), "sh", "-c", "exit 0")
-	waitDone(t, j)
+	<-j.Done()
 
 	st := j.Status()
 	if st.State != StateExited || st.ExitCode != 0 {
@@ -31,7 +32,7 @@ func TestJobExitSuccess(t *testing.T) {
 
 func TestJobExitFailure(t *testing.T) {
 	j := mustStart(t, newTestManager(t), "sh", "-c", "exit 3")
-	waitDone(t, j)
+	<-j.Done()
 
 	if st := j.Status(); st.State != StateExited || st.ExitCode != 3 {
 		t.Fatalf("state, exit code = %v, %d; want %v, 3", st.State, st.ExitCode, StateExited)
@@ -40,7 +41,7 @@ func TestJobExitFailure(t *testing.T) {
 
 func TestJobSignaled(t *testing.T) {
 	j := mustStart(t, newTestManager(t), "sh", "-c", "kill -KILL $$")
-	waitDone(t, j)
+	<-j.Done()
 
 	if st := j.Status(); st.State != StateSignaled || st.Signal != syscall.SIGKILL {
 		t.Fatalf("state, signal = %v, %v; want %v, SIGKILL", st.State, st.Signal, StateSignaled)
@@ -56,17 +57,18 @@ func TestJobOutputCombinesStdoutAndStderr(t *testing.T) {
 }
 
 func TestJobOutputStreamsLive(t *testing.T) {
-	// The job prints a line, then waits for the test to create a file
-	gate := filepath.Join(t.TempDir(), "gate")
-	script := `echo first; while [ ! -e "$1" ]; do sleep 0.01; done; echo second`
+	// The job prints a line, then blocks reading the FIFO until the test writes to it
+	gate := newFIFO(t)
+	script := `echo first; read line < "$1"; echo second`
 	j := mustStart(t, newTestManager(t), "sh", "-c", script, "sh", gate)
 
-	r := bufio.NewReader(j.Output(testContext(t)))
+	r := bufio.NewReader(j.Output(t.Context()))
 	if line, err := r.ReadString('\n'); err != nil || line != "first\n" {
 		t.Fatalf("ReadString = %q, %v; want %q, nil", line, err, "first\n")
 	}
 
-	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+	// Opening for writing blocks until the job opens the FIFO for reading
+	if err := os.WriteFile(gate, []byte("go\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 	if rest, err := io.ReadAll(r); err != nil || string(rest) != "second\n" {
@@ -80,46 +82,112 @@ func TestJobOutputStreamsLive(t *testing.T) {
 }
 
 func TestJobStop(t *testing.T) {
-	j := mustStart(t, newTestManager(t), "sleep", "100")
+	j := mustStart(t, newTestManager(t), "cat", newFIFO(t))
 
-	if err := j.Stop(testContext(t)); err != nil {
+	if err := j.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if st := j.Status(); st.State != StateStopped || st.Signal != syscall.SIGKILL {
 		t.Fatalf("state, signal = %v, %v; want %v, SIGKILL", st.State, st.Signal, StateStopped)
 	}
-	if err := j.Stop(testContext(t)); !errors.Is(err, ErrNotRunning) {
+	if err := j.Stop(t.Context()); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("second Stop error = %v, want ErrNotRunning", err)
 	}
 }
 
 func TestJobStopKillsProcessTree(t *testing.T) {
-	j := mustStart(t, newTestManager(t), "sh", "-c", "sleep 100 & echo $!; wait")
-	pid := readPID(t, j)
+	j := mustStart(t, newTestManager(t), "sh", "-c", `cat "$1" & echo $!; wait`, "sh", newFIFO(t))
+	waitExit := watchProcess(t, readPID(t, j))
 
-	if err := j.Stop(testContext(t)); err != nil {
+	if err := j.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	waitProcessGone(t, pid)
+	waitExit()
 }
 
 func TestJobLeaderExitKillsGroup(t *testing.T) {
-	// The background sleep keeps the output pipe open after sh exits
-	j := mustStart(t, newTestManager(t), "sh", "-c", "sleep 100 & echo $!")
-	pid := readPID(t, j)
+	// The background cat never exits on its own and keeps the output pipe open after sh exits
+	j := mustStart(t, newTestManager(t), "sh", "-c", `cat "$1" & echo $!`, "sh", newFIFO(t))
+	waitExit := watchProcess(t, readPID(t, j))
 
-	waitDone(t, j)
+	<-j.Done()
 	if st := j.Status(); st.State != StateExited || st.ExitCode != 0 {
 		t.Fatalf("state, exit code = %v, %d; want %v, 0", st.State, st.ExitCode, StateExited)
 	}
-	waitProcessGone(t, pid)
+	waitExit()
+}
+
+func TestJobKillAtEachLifecycleStage(t *testing.T) {
+	// Each case drives the job to the stage where a kill lands, rather than racing a kill against the job exiting
+	tests := []struct {
+		name      string
+		argv      []string
+		advance   func(j *Job)
+		wantErr   error
+		wantState State
+	}{
+		{
+			// The leader can't exit on its own, so the kill is what ends it
+			name:      "leader running",
+			argv:      []string{"cat", newFIFO(t)},
+			advance:   func(j *Job) {},
+			wantState: StateStopped,
+		},
+		{
+			// The leader has exited but is unreaped, so the group's only member is a zombie.
+			// The zombie still belongs to the group, so the kill succeeds rather than failing with ESRCH, but the job exited on its own.
+			name:      "leader zombie",
+			argv:      []string{"true"},
+			advance:   func(j *Job) { j.waitOnLeader(j.cmd.Process.Pid) },
+			wantState: StateExited,
+		},
+		{
+			// The job has finished, so the kill reports it isn't running and leaves the recorded state alone
+			name:      "leader reaped",
+			argv:      []string{"true"},
+			advance:   func(j *Job) { j.wait() },
+			wantErr:   ErrNotRunning,
+			wantState: StateExited,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := startUnwaited(t, tt.argv[0], tt.argv[1:]...)
+			tt.advance(j)
+
+			if err := j.kill(); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("kill error = %v, want %v", err, tt.wantErr)
+			}
+
+			// Finish the job unless advance already did
+			select {
+			case <-j.done:
+			default:
+				j.wait()
+			}
+
+			st := j.Status()
+			switch tt.wantState {
+			case StateStopped:
+				if st.State != StateStopped || st.Signal != syscall.SIGKILL {
+					t.Fatalf("state, signal = %v, %v; want %v, SIGKILL", st.State, st.Signal, StateStopped)
+				}
+			case StateExited:
+				if st.State != StateExited || st.ExitCode != 0 {
+					t.Fatalf("state, exit code = %v, %d; want %v, 0", st.State, st.ExitCode, StateExited)
+				}
+			}
+		})
+	}
 }
 
 func TestJobConcurrentStop(t *testing.T) {
-	// Stop races with the job exiting on its own, with other Stops, and with readers.
+	// Stop races with other Stops and with readers.
+	// The leader can't exit on its own, so the outcome doesn't depend on which goroutine wins.
 	m := newTestManager(t)
+	fifo := newFIFO(t)
 	for i := range 20 {
-		j := mustStart(t, m, "true")
+		j := mustStart(t, m, "cat", fifo)
 
 		const stoppers = 4
 		errs := make([]error, stoppers)
@@ -128,7 +196,7 @@ func TestJobConcurrentStop(t *testing.T) {
 			wg.Add(2)
 			go func() {
 				defer wg.Done()
-				errs[k] = j.Stop(testContext(t))
+				errs[k] = j.Stop(t.Context())
 			}()
 			go func() {
 				defer wg.Done()
@@ -144,35 +212,49 @@ func TestJobConcurrentStop(t *testing.T) {
 			}
 		}
 
-		// A nil Stop may still end in StateExited if the kill hit an already exited leader.
-		// StateStopped is only valid if some Stop actually sent the kill.
-		st := j.Status()
-		switch {
-		case st.State == StateExited && st.ExitCode == 0:
-		case st.State == StateStopped && st.Signal == syscall.SIGKILL && slices.Contains(errs, nil):
-		default:
-			t.Fatalf("iteration %d: status = %+v after Stop errors %v", i, st, errs)
+		// The first kill always reaches the running leader
+		if !slices.Contains(errs, nil) {
+			t.Fatalf("iteration %d: Stop errors = %v, want at least one nil", i, errs)
+		}
+		if st := j.Status(); st.State != StateStopped || st.Signal != syscall.SIGKILL {
+			t.Fatalf("iteration %d: state, signal = %v, %v; want %v, SIGKILL", i, st.State, st.Signal, StateStopped)
 		}
 	}
+}
+
+// startUnwaited starts a job without its wait goroutine, so the test drives the lifecycle by calling waitOnLeader, kill, and wait itself
+func startUnwaited(t *testing.T, command string, args ...string) *Job {
+	t.Helper()
+	path, err := exec.LookPath(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := newJob(t.Name(), "alice", command, path, args)
+	if err := j.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-j.done:
+		default:
+			// The test failed before finishing the job; kill and reap it
+			_ = syscall.Kill(-j.cmd.Process.Pid, syscall.SIGKILL)
+			j.wait()
+		}
+	})
+	return j
 }
 
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	m := NewManager()
 	t.Cleanup(func() {
-		if err := m.Shutdown(testContext(t)); err != nil {
+		// t.Context is already canceled when cleanups run
+		if err := m.Shutdown(context.Background()); err != nil {
 			t.Errorf("Shutdown: %v", err)
 		}
 	})
 	return m
-}
-
-// testContext returns a context that is canceled after testTimeout or when the test ends
-func testContext(t *testing.T) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	t.Cleanup(cancel)
-	return ctx
 }
 
 func mustStart(t *testing.T, m *Manager, cmd string, args ...string) *Job {
@@ -184,18 +266,9 @@ func mustStart(t *testing.T, m *Manager, cmd string, args ...string) *Job {
 	return j
 }
 
-func waitDone(t *testing.T, j *Job) {
-	t.Helper()
-	select {
-	case <-j.Done():
-	case <-time.After(testTimeout):
-		t.Fatalf("job %s did not finish within %v", j.ID(), testTimeout)
-	}
-}
-
 func readAll(t *testing.T, j *Job) string {
 	t.Helper()
-	b, err := io.ReadAll(j.Output(testContext(t)))
+	b, err := io.ReadAll(j.Output(t.Context()))
 	if err != nil {
 		t.Errorf("reading output of job %s: %v", j.ID(), err)
 	}
@@ -205,7 +278,7 @@ func readAll(t *testing.T, j *Job) string {
 // readPID parses the first line of the job's output as a pid
 func readPID(t *testing.T, j *Job) int {
 	t.Helper()
-	line, err := bufio.NewReader(j.Output(testContext(t))).ReadString('\n')
+	line, err := bufio.NewReader(j.Output(t.Context())).ReadString('\n')
 	if err != nil {
 		t.Fatalf("reading pid: %v", err)
 	}
@@ -216,16 +289,44 @@ func readPID(t *testing.T, j *Job) int {
 	return pid
 }
 
-// waitProcessGone fails the test if pid is still alive after testTimeout.
-// A zombie counts as gone: it has been killed and only awaits reaping by init.
-func waitProcessGone(t *testing.T, pid int) {
+// newFIFO returns the path of a new FIFO.
+// Opening it blocks until the other end is opened, so `cat` on a FIFO that is never written blocks until it is killed.
+func newFIFO(t *testing.T) string {
 	t.Helper()
-	for deadline := time.Now().Add(testTimeout); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-		// The state field follows the parenthesized command name, which may contain spaces.
-		if err != nil || strings.HasPrefix(string(b[strings.LastIndexByte(string(b), ')')+1:]), " Z") {
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// watchProcess opens a pidfd for pid and returns a function that blocks until the process exits.
+// A pidfd keeps referring to the same process even if pid is reused, so call watchProcess while pid is known to be alive.
+// The pidfd becomes readable once the process exits, so a zombie counts as gone: it has been killed and only awaits reaping by init.
+func watchProcess(t *testing.T, pid int) (waitExit func()) {
+	t.Helper()
+	fd, err := unix.PidfdOpen(pid, 0)
+	if errors.Is(err, unix.ESRCH) {
+		// Already exited and reaped
+		return func() {}
+	}
+	if err != nil {
+		t.Fatalf("pidfd_open(%d): %v", pid, err)
+	}
+	t.Cleanup(func() { unix.Close(fd) })
+
+	return func() {
+		t.Helper()
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		for {
+			_, err := unix.Poll(fds, -1)
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			if err != nil {
+				t.Fatalf("poll pidfd of process %d: %v", pid, err)
+			}
 			return
 		}
 	}
-	t.Fatalf("process %d still alive after %v", pid, testTimeout)
 }

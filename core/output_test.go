@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const testTimeout = 10 * time.Second
-
 func TestOutputReaderReadsFromStart(t *testing.T) {
 	b := newOutputBuffer()
 	b.Write([]byte("hello "))
@@ -55,14 +53,14 @@ func TestOutputReaderWakesOnWriteAndClose(t *testing.T) {
 	res := read()
 	assertBlocked(res)
 	b.Write([]byte("x"))
-	if got := mustRecv(t, res); got.err != nil || got.data != "x" {
+	if got := <-res; got.err != nil || got.data != "x" {
 		t.Fatalf("Read = %+v, want %q", got, "x")
 	}
 
 	res = read()
 	assertBlocked(res)
 	b.Close()
-	if got := mustRecv(t, res); got.err != io.EOF {
+	if got := <-res; got.err != io.EOF {
 		t.Fatalf("Read after Close error = %v, want io.EOF", got.err)
 	}
 }
@@ -77,7 +75,7 @@ func TestOutputReaderContextCancel(t *testing.T) {
 		errc <- err
 	}()
 	cancel()
-	if err := mustRecv(t, errc); !errors.Is(err, context.Canceled) {
+	if err := <-errc; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Read error = %v, want context.Canceled", err)
 	}
 }
@@ -107,21 +105,8 @@ func TestOutputReaderConcurrentReaders(t *testing.T) {
 	b.Close()
 
 	for i := range readers {
-		if got := mustRecv(t, results); got.err != nil || !bytes.Equal(got.data, want) {
+		if got := <-results; got.err != nil || !bytes.Equal(got.data, want) {
 			t.Fatalf("reader %d got %d bytes, %v; want %d identical bytes, nil", i, len(got.data), got.err, len(want))
 		}
 	}
-}
-
-// mustRecv returns the next value from c, failing the test if none arrives within testTimeout
-func mustRecv[T any](t *testing.T, c <-chan T) T {
-	t.Helper()
-	select {
-	case v := <-c:
-		return v
-	case <-time.After(testTimeout):
-	}
-	t.Fatalf("nothing received within %v", testTimeout)
-	var zero T
-	return zero
 }

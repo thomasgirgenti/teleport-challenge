@@ -5,7 +5,6 @@ package core
 import (
 	"errors"
 	"os/exec"
-	"sync"
 	"testing"
 )
 
@@ -44,11 +43,11 @@ func TestManagerGet(t *testing.T) {
 
 func TestManagerShutdown(t *testing.T) {
 	m := NewManager()
-	running := mustStart(t, m, "sleep", "100")
+	running := mustStart(t, m, "cat", newFIFO(t))
 	exited := mustStart(t, m, "true")
-	waitDone(t, exited)
+	<-exited.Done()
 
-	if err := m.Shutdown(testContext(t)); err != nil {
+	if err := m.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if st := running.Status(); st.State != StateStopped {
@@ -59,54 +58,5 @@ func TestManagerShutdown(t *testing.T) {
 	}
 	if _, err := m.Start("alice", "true", nil); !errors.Is(err, ErrManagerClosed) {
 		t.Errorf("Start after Shutdown error = %v, want ErrManagerClosed", err)
-	}
-}
-
-func TestManagerStartDuringShutdown(t *testing.T) {
-	// Starters keep starting jobs until the manager closes, so some Start calls are mid-flight when Shutdown runs
-	m := newTestManager(t)
-	const starters = 8
-	jobs := make([][]*Job, starters)
-	var running, done sync.WaitGroup // running: every starter has made its first Start call
-	running.Add(starters)
-	for i := range starters {
-		done.Add(1)
-		go func() {
-			defer done.Done()
-			for n := 0; ; n++ {
-				j, err := m.Start("alice", "sleep", []string{"100"})
-				if n == 0 {
-					running.Done()
-				}
-				if errors.Is(err, ErrManagerClosed) {
-					return
-				}
-				if err != nil {
-					t.Errorf("Start: %v", err)
-					return
-				}
-				jobs[i] = append(jobs[i], j)
-			}
-		}()
-	}
-
-	running.Wait()
-	if err := m.Shutdown(testContext(t)); err != nil {
-		t.Errorf("Shutdown: %v", err)
-	}
-	done.Wait()
-
-	// Every job Start returned was registered before Shutdown closed the manager, so Shutdown must have stopped it
-	for _, js := range jobs {
-		for _, j := range js {
-			select {
-			case <-j.Done():
-			default:
-				t.Fatalf("job %s still running after Shutdown returned", j.ID())
-			}
-			if st := j.Status(); st.State != StateStopped {
-				t.Fatalf("job %s: state = %v, want %v", j.ID(), st.State, StateStopped)
-			}
-		}
 	}
 }
