@@ -1,6 +1,6 @@
 GO_IMAGE := golang:1.27
 
-.PHONY: test test-linux vet fmt tidy proto
+.PHONY: test test-linux vet fmt tidy proto certs
 
 default: fmt tidy test-linux
 
@@ -29,3 +29,7 @@ tidy:
 proto:
 	buf lint
 	buf generate
+
+# Generate a development CA, server, and client certs into certs/. Re-running replaces them all.
+certs:
+	go run ./cmd/certgen
