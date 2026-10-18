@@ -2,7 +2,7 @@
 
 // Command workerd runs the job worker gRPC server.
 //
-// It listens on localhost:50051 and loads its certs from the certs directory, which `make certs` creates.
+// It listens on 127.0.0.1:50051 and loads its certs from the certs directory, which `make certs` creates.
 // On SIGINT or SIGTERM it kills every job and stops.
 package main
 
@@ -20,7 +20,9 @@ import (
 // TODO: Add configuration system.
 // Consider a CLI library that supports both flags and environment variables with reasonable defaults.
 const (
-	addr         = "localhost:50051"
+	// addr is an explicit IP because "localhost" also resolves to ::1, and net.Listen binds only one of its addresses.
+	// A client trying ::1 first would see "connection refused" instead of the real error, e.g. a rejected cert, when its fallback to 127.0.0.1 fails.
+	addr         = "127.0.0.1:50051"
 	certFile     = "certs/server.crt"
 	keyFile      = "certs/server.key"
 	clientCAFile = "certs/client-ca.crt"

@@ -5,7 +5,7 @@
 
 ```sh
 make certs              # writes a dev CA, server cert, and client certs (alice, bob, eve) to certs/
-go run ./cmd/workerd    # serves on localhost:50051 until SIGINT/SIGTERM
+go run ./cmd/workerd    # serves on 127.0.0.1:50051 until SIGINT/SIGTERM
 ```
 
 The address and cert paths are hardcoded (see `cmd/workerd/main.go`). Linux only.
