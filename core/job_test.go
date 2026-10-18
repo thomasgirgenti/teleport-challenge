@@ -138,7 +138,7 @@ func TestJobKillAtEachLifecycleStage(t *testing.T) {
 			// The zombie still belongs to the group, so the kill succeeds rather than failing with ESRCH, but the job exited on its own.
 			name:      "leader zombie",
 			argv:      []string{"true"},
-			advance:   func(j *Job) { j.waitOnLeader(j.cmd.Process.Pid) },
+			advance:   func(j *Job) { waitOnLeader(j.cmd.Process.Pid) },
 			wantState: StateExited,
 		},
 		{

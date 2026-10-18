@@ -163,7 +163,7 @@ func (j *Job) wait() {
 	pgid := j.cmd.Process.Pid
 
 	// Block until the process group leader exits w/o reaping -- prevents pgid reuse before kill signal is issued
-	j.waitOnLeader(pgid)
+	waitOnLeader(pgid)
 
 	// Kill group members left behind. They were reparented to init, which reaps them.
 	j.mu.Lock()

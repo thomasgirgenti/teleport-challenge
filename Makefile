@@ -1,6 +1,6 @@
 GO_IMAGE := golang:1.27
 
-.PHONY: test test-linux vet fmt
+.PHONY: test test-linux vet fmt tidy proto
 
 default: fmt tidy test-linux
 
@@ -23,3 +23,9 @@ fmt:
 
 tidy:
 	go mod tidy
+
+# Lint the protobuf definitions and generate Go code from them. Requires buf; the Go plugins are pinned as tools in go.mod.
+# buf must be installed locally: https://buf.build/docs/cli/installation/
+proto:
+	buf lint
+	buf generate

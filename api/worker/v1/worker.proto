@@ -1,0 +1,73 @@
+edition = "2024";
+
+package worker.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// WorkerService runs Linux processes (jobs) on behalf of mTLS-authenticated clients.
+// Callers can only see and act on jobs they own; other jobs are reported as NotFound.
+service WorkerService {
+  // StartJob starts a command owned by the caller and returns its ID.
+  rpc StartJob(StartJobRequest) returns (StartJobResponse);
+
+  // StopJob SIGKILLs a running job's process group and returns once the job has ended.
+  rpc StopJob(StopJobRequest) returns (StopJobResponse);
+
+  // GetJobStatus returns the current status of a job.
+  rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+
+  // StreamJobOutput streams the job's combined stdout and stderr from the first byte, following live output until the job ends.
+  rpc StreamJobOutput(StreamJobOutputRequest) returns (stream StreamJobOutputResponse);
+}
+
+message StartJobRequest {
+  string command = 1;
+  repeated string args = 2;
+}
+
+message StartJobResponse {
+  string job_id = 1;
+}
+
+message StopJobRequest {
+  string job_id = 1;
+}
+
+message StopJobResponse {}
+
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  JobStatus status = 1;
+}
+
+message StreamJobOutputRequest {
+  string job_id = 1;
+}
+
+message StreamJobOutputResponse {
+  // A chunk of raw output. Chunk boundaries don't align with lines, UTF-8 characters, or the job's writes; clients append chunks in order.
+  bytes data = 1;
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_RUNNING = 1;
+  JOB_STATE_EXITED = 2; // exited on its own; exit_code is set
+  JOB_STATE_SIGNALED = 3; // killed by a signal not sent via StopJob; signal is set
+  JOB_STATE_STOPPED = 4; // killed via StopJob
+}
+
+message JobStatus {
+  string job_id = 1;
+  string owner = 2;
+  string command = 3;
+  repeated string args = 4;
+  JobState state = 5;
+  int32 exit_code = 6; // valid only for JOB_STATE_EXITED
+  string signal = 7; // signal name (e.g. "SIGKILL"); valid for JOB_STATE_SIGNALED and JOB_STATE_STOPPED
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp ended_at = 9; // unset while running
+}
