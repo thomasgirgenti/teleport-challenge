@@ -13,7 +13,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"time"
 )
@@ -77,17 +76,10 @@ func newCert(template *x509.Certificate, validity time.Duration, parent *Cert) (
 		return nil, fmt.Errorf("generate key: %w", err)
 	}
 
-	// 128 random bits, as recommended by the CA/Browser Forum baseline requirements (at least 64)
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, fmt.Errorf("generate serial number: %w", err)
-	}
-
 	tmpl := *template
-	now := time.Now()
-	tmpl.SerialNumber = serial
+	now := time.Now().Truncate(time.Minute)
 	tmpl.NotBefore = now.Add(-clockSkew)
-	tmpl.NotAfter = now.Add(validity)
+	tmpl.NotAfter = tmpl.NotBefore.Add(validity)
 
 	issuer, signer := &tmpl, key
 	if parent != nil {
