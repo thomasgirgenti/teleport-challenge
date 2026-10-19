@@ -7,8 +7,6 @@ import (
 	"io"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	pb "github.com/thomasgirgenti/teleport-challenge/gen/worker/v1"
 )
 
@@ -22,7 +20,7 @@ func start(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	resp, err := c.StartJob(ctx, pb.StartJobRequest_builder{
-		Command: proto.String(args[0]),
+		Command: new(args[0]),
 		Args:    args[1:],
 	}.Build())
 	if err != nil {
@@ -36,7 +34,7 @@ func start(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout 
 func stop(ctx context.Context, c pb.WorkerServiceClient, args []string, _ io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	_, err := c.StopJob(ctx, pb.StopJobRequest_builder{JobId: proto.String(args[0])}.Build())
+	_, err := c.StopJob(ctx, pb.StopJobRequest_builder{JobId: new(args[0])}.Build())
 	return err
 }
 
@@ -44,7 +42,7 @@ func stop(ctx context.Context, c pb.WorkerServiceClient, args []string, _ io.Wri
 func jobStatus(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := c.GetJobStatus(ctx, pb.GetJobStatusRequest_builder{JobId: proto.String(args[0])}.Build())
+	resp, err := c.GetJobStatus(ctx, pb.GetJobStatusRequest_builder{JobId: new(args[0])}.Build())
 	if err != nil {
 		return err
 	}
@@ -57,7 +55,7 @@ func logs(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout i
 	// Cancelling ends the stream if we return before the server does, e.g. when stdout fails
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := c.StreamJobOutput(ctx, pb.StreamJobOutputRequest_builder{JobId: proto.String(args[0])}.Build())
+	stream, err := c.StreamJobOutput(ctx, pb.StreamJobOutputRequest_builder{JobId: new(args[0])}.Build())
 	if err != nil {
 		return err
 	}

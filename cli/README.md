@@ -81,7 +81,6 @@ So a rejected client sometimes sees `broken pipe` or `connection reset by peer` 
 ## Timeouts
 
 `start`, `stop`, and `status` time out after 10s. `logs` has no timeout and follows the job for as long as it runs.
-The client sends keepalive pings every 30s and drops the connection if one isn't acknowledged within 10s.
 
 ## Testing
 

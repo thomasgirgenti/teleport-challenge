@@ -23,7 +23,10 @@ type testServer struct {
 	dir  string
 }
 
-// startServer runs server.Serve with a fresh PKI: alice and bob are trusted clients, eve's cert is signed by an untrusted CA.
+// startServer runs server.Serve with a fresh PKI:
+// - alice and bob are trusted clients
+// - eve's cert is signed by an untrusted CA
+// - nobody's cert is trusted but has no user (empty common name)
 // The test fails if Serve doesn't return cleanly once cleanup cancels it.
 func startServer(t *testing.T) *testServer {
 	t.Helper()
@@ -44,6 +47,7 @@ func startServer(t *testing.T) *testServer {
 	ts.write(t, "alice", must(pki.NewClientCert(clientCA, "alice")), true)
 	ts.write(t, "bob", must(pki.NewClientCert(clientCA, "bob")), true)
 	ts.write(t, "eve", must(pki.NewClientCert(untrustedCA, "eve")), true)
+	ts.write(t, "nobody", must(pki.NewClientCert(clientCA, "")), true)
 
 	cfg, err := server.TLSConfig(ts.path("server.crt"), ts.path("server.key"), ts.path("client-ca.crt"))
 	if err != nil {
@@ -199,13 +203,24 @@ func TestOtherUsersJob(t *testing.T) {
 	}
 }
 
-// TestUntrustedClientCert checks that cert signed by an untreated CA is refused
+// TestUntrustedClientCert checks that cert signed by an untrusted CA is refused
 func TestUntrustedClientCert(t *testing.T) {
 	ts := startServer(t)
 	for _, args := range [][]string{{"start", "echo", "hi"}, {"status", "ID"}} {
 		code, stdout, stderr := ts.run(t, "eve", args...)
 		if code != exitError || stdout != "" || !strings.HasPrefix(stderr, "error: ") {
 			t.Errorf("eve %q = %d, stdout %q, stderr %q; want %d and an error", args, code, stdout, stderr, exitError)
+		}
+	}
+}
+
+// TestClientCertWithoutUser checks that a trusted cert with no user is refused during the handshake
+func TestClientCertWithoutUser(t *testing.T) {
+	ts := startServer(t)
+	for _, args := range [][]string{{"start", "echo", "hi"}, {"status", "ID"}} {
+		code, stdout, stderr := ts.run(t, "nobody", args...)
+		if code != exitError || stdout != "" || !strings.HasPrefix(stderr, "error: ") {
+			t.Errorf("nobody %q = %d, stdout %q, stderr %q; want %d and an error", args, code, stdout, stderr, exitError)
 		}
 	}
 }
