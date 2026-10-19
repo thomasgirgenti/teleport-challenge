@@ -2,7 +2,7 @@ GO_IMAGE := golang:1.27
 
 .PHONY: test test-linux vet fmt tidy proto build certs
 
-default: fmt tidy test-linux
+default: fmt tidy proto build test-linux
 
 # Run all tests with race detection. Requires Linux.
 test:

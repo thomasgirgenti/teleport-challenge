@@ -77,20 +77,8 @@ func shutdown(gs *grpc.Server, jobs *core.Manager) error {
 		err = fmt.Errorf("stop jobs: %w", jobsErr)
 	}
 
-	stopped := make(chan struct{})
-	go func() {
-		gs.GracefulStop()
-		close(stopped)
-	}()
-	timer := time.NewTimer(grpcShutdownTimeout)
+	timer := time.AfterFunc(grpcShutdownTimeout, gs.Stop)
 	defer timer.Stop()
-	select {
-	case <-stopped:
-	case <-timer.C:
-		// A client isn't reading its stream. Stop closes every connection, which also lets GracefulStop return.
-		// Both still wait for in-progress handshakes, which handshakeTimeout bounds.
-		gs.Stop()
-		<-stopped
-	}
+	gs.GracefulStop()
 	return err
 }
