@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/thomasgirgenti/teleport-challenge/core"
@@ -47,7 +46,7 @@ const (
 func Serve(ctx context.Context, lst net.Listener, tlsConfig *tls.Config) error {
 	jobs := core.NewManager()
 	gs := grpc.NewServer(
-		grpc.Creds(identityCreds{TransportCredentials: credentials.NewTLS(tlsConfig)}),
+		grpc.Creds(newIdentityCreds(tlsConfig)),
 		grpc.ConnectionTimeout(handshakeTimeout),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    keepaliveTime,
