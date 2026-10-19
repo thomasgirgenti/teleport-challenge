@@ -100,7 +100,8 @@ func userFromState(cs tls.ConnectionState) (string, error) {
 	return userFromCert(cs.VerifiedChains[0][0])
 }
 
-// userFromCert returns the username (read from common name) of a verified client cert
+// userFromCert returns the username (Common Name) from a cert
+// Split out from userFromState for simpler unit testing
 func userFromCert(cert *x509.Certificate) (string, error) {
 	if cert.Subject.CommonName == "" {
 		return "", errors.New("client certificate has an empty common name")
