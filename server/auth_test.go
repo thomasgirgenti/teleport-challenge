@@ -8,10 +8,8 @@ import (
 	"crypto/x509/pkix"
 	"testing"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
-
 	pb "github.com/thomasgirgenti/teleport-challenge/gen/worker/v1"
+	"google.golang.org/grpc/codes"
 )
 
 func TestUserFromCert(t *testing.T) {
@@ -58,7 +56,7 @@ func TestHandshake(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := ts.clientWithConfig(t, tt.cfg)
-			_, err := c.GetJobStatus(t.Context(), pb.GetJobStatusRequest_builder{JobId: proto.String("unknown")}.Build())
+			_, err := c.GetJobStatus(t.Context(), pb.GetJobStatusRequest_builder{JobId: new("unknown")}.Build())
 			wantCode(t, err, tt.want)
 		})
 	}

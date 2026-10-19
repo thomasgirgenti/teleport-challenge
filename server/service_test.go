@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
 
 	pb "github.com/thomasgirgenti/teleport-challenge/gen/worker/v1"
 )
@@ -74,7 +73,7 @@ func TestStartJobInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := alice.StartJob(t.Context(), pb.StartJobRequest_builder{Command: proto.String(tt.command)}.Build())
+			_, err := alice.StartJob(t.Context(), pb.StartJobRequest_builder{Command: new(tt.command)}.Build())
 			wantCode(t, err, codes.InvalidArgument)
 		})
 	}
@@ -136,7 +135,7 @@ func TestAuthorization(t *testing.T) {
 		call func(t *testing.T, c pb.WorkerServiceClient, id string) error
 	}{
 		{"GetJobStatus", func(t *testing.T, c pb.WorkerServiceClient, id string) error {
-			_, err := c.GetJobStatus(t.Context(), pb.GetJobStatusRequest_builder{JobId: proto.String(id)}.Build())
+			_, err := c.GetJobStatus(t.Context(), pb.GetJobStatusRequest_builder{JobId: new(id)}.Build())
 			return err
 		}},
 		{"StopJob", func(t *testing.T, c pb.WorkerServiceClient, id string) error {
@@ -190,7 +189,7 @@ func TestStreamLargeOutput(t *testing.T) {
 	}
 
 	id := startJob(t, alice, "seq", "1", fmt.Sprint(lines))
-	stream, err := alice.StreamJobOutput(t.Context(), pb.StreamJobOutputRequest_builder{JobId: proto.String(id)}.Build())
+	stream, err := alice.StreamJobOutput(t.Context(), pb.StreamJobOutputRequest_builder{JobId: new(id)}.Build())
 	if err != nil {
 		t.Fatal(err)
 	}

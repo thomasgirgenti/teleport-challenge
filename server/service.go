@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/thomasgirgenti/teleport-challenge/core"
@@ -162,9 +161,9 @@ func signalName(sig syscall.Signal) string {
 // exit_code is only set for jobs that exited on their own and signal only for jobs killed by a signal.
 func toProto(st core.Status) *pb.JobStatus {
 	b := pb.JobStatus_builder{
-		JobId:     proto.String(st.ID),
-		Owner:     proto.String(st.Owner),
-		Command:   proto.String(st.Command),
+		JobId:     new(st.ID),
+		Owner:     new(st.Owner),
+		Command:   new(st.Command),
 		Args:      st.Args,
 		StartedAt: timestamppb.New(st.StartedAt),
 	}
@@ -173,13 +172,13 @@ func toProto(st core.Status) *pb.JobStatus {
 		b.State = pb.JobState_JOB_STATE_RUNNING.Enum()
 	case core.StateExited:
 		b.State = pb.JobState_JOB_STATE_EXITED.Enum()
-		b.ExitCode = proto.Int32(int32(st.ExitCode))
+		b.ExitCode = new(int32(st.ExitCode))
 	case core.StateSignaled:
 		b.State = pb.JobState_JOB_STATE_SIGNALED.Enum()
-		b.Signal = proto.String(signalName(st.Signal))
+		b.Signal = new(signalName(st.Signal))
 	case core.StateStopped:
 		b.State = pb.JobState_JOB_STATE_STOPPED.Enum()
-		b.Signal = proto.String(signalName(st.Signal))
+		b.Signal = new(signalName(st.Signal))
 	}
 	if !st.EndedAt.IsZero() {
 		b.EndedAt = timestamppb.New(st.EndedAt)

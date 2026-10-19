@@ -18,7 +18,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	pb "github.com/thomasgirgenti/teleport-challenge/gen/worker/v1"
 	"github.com/thomasgirgenti/teleport-challenge/internal/pki"
@@ -133,7 +132,7 @@ func (ts *testServer) clientWithConfig(t *testing.T, cfg *tls.Config) pb.WorkerS
 
 func startJob(t *testing.T, c pb.WorkerServiceClient, command string, args ...string) string {
 	t.Helper()
-	req := pb.StartJobRequest_builder{Command: proto.String(command), Args: args}.Build()
+	req := pb.StartJobRequest_builder{Command: new(command), Args: args}.Build()
 	resp, err := c.StartJob(t.Context(), req)
 	if err != nil {
 		t.Fatalf("StartJob(%q, %q): %v", command, args, err)
@@ -143,7 +142,7 @@ func startJob(t *testing.T, c pb.WorkerServiceClient, command string, args ...st
 
 func getStatus(t *testing.T, c pb.WorkerServiceClient, id string) *pb.JobStatus {
 	t.Helper()
-	resp, err := c.GetJobStatus(t.Context(), pb.GetJobStatusRequest_builder{JobId: proto.String(id)}.Build())
+	resp, err := c.GetJobStatus(t.Context(), pb.GetJobStatusRequest_builder{JobId: new(id)}.Build())
 	if err != nil {
 		t.Fatalf("GetJobStatus(%s): %v", id, err)
 	}
@@ -151,7 +150,7 @@ func getStatus(t *testing.T, c pb.WorkerServiceClient, id string) *pb.JobStatus 
 }
 
 func stopJob(t *testing.T, c pb.WorkerServiceClient, id string) error {
-	_, err := c.StopJob(t.Context(), pb.StopJobRequest_builder{JobId: proto.String(id)}.Build())
+	_, err := c.StopJob(t.Context(), pb.StopJobRequest_builder{JobId: new(id)}.Build())
 	return err
 }
 
@@ -159,7 +158,7 @@ func stopJob(t *testing.T, c pb.WorkerServiceClient, id string) error {
 // Read returns io.EOF once the stream ends with OK, and the stream's status error otherwise.
 func openStream(t *testing.T, ctx context.Context, c pb.WorkerServiceClient, id string) *streamReader {
 	t.Helper()
-	stream, err := c.StreamJobOutput(ctx, pb.StreamJobOutputRequest_builder{JobId: proto.String(id)}.Build())
+	stream, err := c.StreamJobOutput(ctx, pb.StreamJobOutputRequest_builder{JobId: new(id)}.Build())
 	if err != nil {
 		t.Fatalf("StreamJobOutput(%s): %v", id, err)
 	}
