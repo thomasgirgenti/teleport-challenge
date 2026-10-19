@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"net"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
-// authInfo is the AuthInfo attached to every connection the server accepts.
+var errUnauthenticated = status.Error(codes.Unauthenticated, "unauthenticated")
+
+// authInfo is the AuthInfo attached to every connection the server accepts
 type authInfo struct {
 	credentials.TLSInfo
 	User string
@@ -90,7 +94,6 @@ func (*identityCreds) OverrideServerName(string) error {
 
 // userFromState returns the username of the client's verified cert
 func userFromState(cs tls.ConnectionState) (string, error) {
-	// RequireAndVerifyClientCert guarantees a verified chain, but check anyway rather than panic
 	if len(cs.VerifiedChains) == 0 || len(cs.VerifiedChains[0]) == 0 {
 		return "", errors.New("no verified client certificate")
 	}
@@ -106,14 +109,14 @@ func userFromCert(cert *x509.Certificate) (string, error) {
 }
 
 // userFrom returns the user authenticated on the connection the RPC arrived on
-func userFrom(ctx context.Context) (string, bool) {
+func userFrom(ctx context.Context) (string, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return "", false
+		return "", errUnauthenticated
 	}
 	ai, ok := p.AuthInfo.(authInfo)
 	if !ok || ai.User == "" {
-		return "", false
+		return "", errUnauthenticated
 	}
-	return ai.User, true
+	return ai.User, nil
 }

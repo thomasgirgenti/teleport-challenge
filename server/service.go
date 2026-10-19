@@ -39,16 +39,16 @@ type service struct {
 }
 
 func (s *service) StartJob(ctx context.Context, req *pb.StartJobRequest) (*pb.StartJobResponse, error) {
-	user, ok := userFrom(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "unauthenticated")
+	user, err := userFrom(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	job, err := s.jobs.Start(user, req.GetCommand(), req.GetArgs())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
-	return pb.StartJobResponse_builder{JobId: proto.String(job.ID())}.Build(), nil
+	return pb.StartJobResponse_builder{JobId: new(job.ID())}.Build(), nil
 }
 
 func (s *service) StopJob(ctx context.Context, req *pb.StopJobRequest) (*pb.StopJobResponse, error) {
@@ -103,9 +103,9 @@ func (s *service) StreamJobOutput(req *pb.StreamJobOutputRequest, stream grpc.Se
 // authorizeJob returns the job with the given ID if the caller owns it.
 // A job owned by someone else is reported exactly like a job that doesn't exist, so callers can't learn which IDs exist.
 func (s *service) authorizeJob(ctx context.Context, id string) (*core.Job, error) {
-	user, ok := userFrom(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "unauthenticated")
+	user, err := userFrom(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "job ID must not be empty")
