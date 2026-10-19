@@ -442,7 +442,7 @@ func (s *server) StreamJobOutput(req *pb.StreamJobOutputRequest, stream grpc.Ser
 
 ### Networking
 
-- Keepalive: Server sets `keepalive.ServerParameters{Time: 30s, Timeout: 10s}` and client sets matching params.
+- Keepalive: Server sets `keepalive.ServerParameters{Time: 30s, Timeout: 10s}` to detect clients that vanish mid-stream. The client sets no keepalive: unary calls have a deadline, and TCP keepalive (on by default in Go) detects a dead server during a long output stream.
 - Timeouts: CLI unary calls use a 10s timeout (matching server req timeout). Output stream has no timeout because it lives as long as the job.
 - Server shutdown on `SIGINT`/`SIGTERM`: `manager.Shutdown(ctx)` kills all jobs. Their output buffers close, so every open stream ends with `OK`. Then `grpcServer.GracefulStop()` runs with a fallback to `Stop()`.
 

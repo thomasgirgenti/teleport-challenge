@@ -22,10 +22,6 @@ const (
 	keepaliveTime    = 30 * time.Second
 	keepaliveTimeout = 10 * time.Second
 
-	// keepaliveMinTime is the shortest client ping interval the server accepts.
-	// It must stay below the CLI's 30s ping interval: grpc's default of 5 minutes would make the server drop those clients with GOAWAY "too_many_pings".
-	keepaliveMinTime = 20 * time.Second
-
 	// handshakeTimeout bounds the TLS handshake and HTTP/2 preface of a new connection.
 	// Stop and GracefulStop wait for in-progress handshakes, so this also bounds shutdown when a peer connects and sends nothing.
 	// grpc's default is 120s.
@@ -51,10 +47,6 @@ func Serve(ctx context.Context, lst net.Listener, tlsConfig *tls.Config) error {
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    keepaliveTime,
 			Timeout: keepaliveTimeout,
-		}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             keepaliveMinTime,
-			PermitWithoutStream: true,
 		}),
 	)
 	pb.RegisterWorkerServiceServer(gs, &service{jobs: jobs})
