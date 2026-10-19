@@ -28,7 +28,7 @@ const (
 
 	// streamChunkSize is the most output sent in one StreamJobOutput message.
 	// It bounds per-stream memory and stays well under gRPC's default 4 MiB max message size.
-	streamChunkSize = 32 * 1024
+	streamChunkSize = 32*1024 - 4 // tag + 3-byte length keeps the encoded message at 32 KiB
 )
 
 // service implements WorkerService on top of a core.Manager.
@@ -80,10 +80,9 @@ func (s *service) StreamJobOutput(req *pb.StreamJobOutputRequest, stream grpc.Se
 		return err
 	}
 
-	// buf is reused across messages; Send serializes the message before it returns
-	buf := make([]byte, streamChunkSize)
 	r := job.Output(stream.Context())
 	for {
+		buf := make([]byte, streamChunkSize)
 		n, err := r.Read(buf)
 		if n > 0 {
 			if err := stream.Send(pb.StreamJobOutputResponse_builder{Data: buf[:n]}.Build()); err != nil {
