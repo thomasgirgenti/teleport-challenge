@@ -67,7 +67,7 @@ message JobStatus {
   repeated string args = 4;
   JobState state = 5;
   int32 exit_code = 6; // valid only for JOB_STATE_EXITED
-  string signal = 7; // signal name (e.g. "SIGKILL"); valid for JOB_STATE_SIGNALED and JOB_STATE_STOPPED
+  string signal = 7; // signal name (e.g. "SIGKILL"), or "signal N" for signals without a name; valid for JOB_STATE_SIGNALED and JOB_STATE_STOPPED
   google.protobuf.Timestamp started_at = 8;
   google.protobuf.Timestamp ended_at = 9; // unset while running
 }

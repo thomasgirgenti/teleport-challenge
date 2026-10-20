@@ -10,6 +10,9 @@ This repo is split into 3 main subdirectories:
 3. **cli** 
    - CLI to connect to worker service and start, stop, get status, and stream output of a job
 
+Binaries live under `cmd/`: `workerd` (the server) and `certgen` (dev certs, run with `make certs`).
+`make build` builds them all into `bin/`.
+
 ## Rough notes from kickoff call
 - job output should be stored in memory, assume unlimited memory on worker machine
 - include bootstrap script to gen certs for mTLS auth
