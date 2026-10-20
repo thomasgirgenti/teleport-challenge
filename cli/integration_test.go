@@ -121,7 +121,7 @@ func (ts *testServer) mustRun(t *testing.T, user string, args ...string) string 
 // startJob starts a job as alice and returns its ID
 func (ts *testServer) startJob(t *testing.T, args ...string) string {
 	t.Helper()
-	return strings.TrimSpace(ts.mustRun(t, "alice", append([]string{"start", "--"}, args...)...))
+	return strings.TrimSpace(ts.mustRun(t, "alice", append([]string{"start"}, args...)...))
 }
 
 func TestStartLogsStatus(t *testing.T) {
@@ -140,7 +140,8 @@ func TestStartLogsStatus(t *testing.T) {
 	}
 }
 
-func TestStartWithoutDashDash(t *testing.T) {
+// TestStartPassesArgsThrough checks that arguments after the job command, flags included, go to the job unchanged
+func TestStartPassesArgsThrough(t *testing.T) {
 	ts := startServer(t)
 	id := strings.TrimSpace(ts.mustRun(t, "alice", "start", "echo", "-n", "x"))
 	if got := ts.mustRun(t, "alice", "logs", id); got != "x" {

@@ -568,8 +568,9 @@ Notes:
 ## 5. CLI UX
 
 The CLI binary is `jobctl`.
-- uses the standard library `flag` package with one `FlagSet` per subcommand
+- uses the standard library `flag` package for the global flags
 - global flags come before the subcommand
+- subcommands take no flags, so everything after `start` is the job's command line
 
 ```
 jobctl [--addr localhost:50051] \
@@ -579,7 +580,7 @@ jobctl [--addr localhost:50051] \
        <command> [args]
 
 Commands:
-  start [--] <cmd> [args...]   Start a job; prints the job ID
+  start <cmd> [args...]        Start a job; prints the job ID
   stop <job-id>                Kill a running job (SIGKILL)
   status <job-id>              Show job status
   logs <job-id>                Stream output from the start, following until the job ends
@@ -588,7 +589,7 @@ Commands:
 Examples:
 
 ```console
-$ jobctl start -- bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
+$ jobctl start bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
 Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 
 # returns when the job ends

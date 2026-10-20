@@ -17,7 +17,7 @@ go run ./cmd/jobctl -h
 jobctl [flags] <command> [args]
 
 Commands:
-  start [--] <cmd> [args...]   Start a job; prints the job ID
+  start <cmd> [args...]        Start a job; prints the job ID
   stop <job-id>                Kill a running job (SIGKILL)
   status <job-id>              Show job status
   logs <job-id>                Stream output from the start, following until the job ends
@@ -30,12 +30,12 @@ Flags:
 ```
 
 Global flags come before the command. The defaults use the certs from `make certs` and connect as alice, so run `jobctl` from the repo root.
-Use `--` before a command whose first argument starts with `-`.
+Everything after `start` is the job's command line, passed through as-is.
 
 ## Examples
 
 ```console
-$ jobctl start -- bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
+$ jobctl start bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
 Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 
 # returns when the job ends

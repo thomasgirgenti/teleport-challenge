@@ -44,7 +44,7 @@ type command struct {
 }
 
 var commands = []command{
-	{"start", "[--] <cmd> [args...]", "Start a job; prints the job ID", 1, -1, start},
+	{"start", "<cmd> [args...]", "Start a job; prints the job ID", 1, -1, start},
 	{"stop", "<job-id>", "Kill a running job (SIGKILL)", 1, 1, stop},
 	{"status", "<job-id>", "Show job status", 1, 1, jobStatus},
 	{"logs", "<job-id>", "Stream output from the start, following until the job ends", 1, 1, logs},
@@ -68,15 +68,22 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return exitUsage
 	}
+
 	cmd, ok := findCommand(fs.Arg(0))
 	if !ok {
 		fmt.Fprintf(stderr, "jobctl: unknown command %q\n", fs.Arg(0))
 		fs.Usage()
 		return exitUsage
 	}
-	cmdArgs, err := cmd.parse(fs.Args()[1:], stderr)
-	if err != nil {
-		return parseExitCode(err)
+
+	cmdArgs := fs.Args()[1:]
+	if len(cmdArgs) == 1 && isHelp(cmdArgs[0]) {
+		printCommandUsage(stderr, cmd)
+		return exitOK
+	}
+	if n := len(cmdArgs); n < cmd.minArgs || (cmd.maxArgs >= 0 && n > cmd.maxArgs) {
+		printCommandUsage(stderr, cmd)
+		return exitUsage
 	}
 
 	tlsCfg, err := tlsConfig(*certFile, *keyFile, *caFile)
@@ -101,23 +108,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// parse checks a subcommand's arguments and returns them with any leading "--" removed.
-// On failure, the usage has already been printed.
-func (c command) parse(args []string, stderr io.Writer) ([]string, error) {
-	fs := flag.NewFlagSet(c.name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { fmt.Fprintf(stderr, "usage: jobctl [flags] %s %s\n", c.name, c.args) }
+func isHelp(arg string) bool {
+	return arg == "-h" || arg == "-help" || arg == "--help"
+}
 
-	// Parse stops at the first non-flag argument, so `start ls -la` passes "-la" to ls.
-	// A command whose first argument starts with "-" needs "--" in front of it.
-	if err := fs.Parse(args); err != nil {
-		return nil, err
-	}
-	if n := fs.NArg(); n < c.minArgs || (c.maxArgs >= 0 && n > c.maxArgs) {
-		fs.Usage()
-		return nil, errUsage
-	}
-	return fs.Args(), nil
+func printCommandUsage(w io.Writer, c command) {
+	fmt.Fprintf(w, "usage: jobctl [flags] %s %s\n", c.name, c.args)
 }
 
 func findCommand(name string) (command, bool) {

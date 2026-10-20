@@ -26,8 +26,6 @@ func TestUsageErrors(t *testing.T) {
 		{"unknown command", []string{"list"}},
 		{"unknown global flag", []string{"--bogus", "status", "ID"}},
 		{"start without command", []string{"start"}},
-		{"start with only --", []string{"start", "--"}},
-		{"start with unknown flag", []string{"start", "-la"}},
 		{"stop without ID", []string{"stop"}},
 		{"stop with two IDs", []string{"stop", "A", "B"}},
 		{"status without ID", []string{"status"}},
@@ -52,7 +50,7 @@ func TestUsageErrors(t *testing.T) {
 }
 
 func TestHelp(t *testing.T) {
-	for _, args := range [][]string{{"-h"}, {"status", "-h"}} {
+	for _, args := range [][]string{{"-h"}, {"status", "-h"}, {"start", "-h"}, {"logs", "--help"}} {
 		code, _, stderr := run(t, args...)
 		if code != exitOK || !strings.Contains(stderr, "usage: jobctl") {
 			t.Errorf("Run(%q) = %d, stderr %q; want %d and usage", args, code, stderr, exitOK)
