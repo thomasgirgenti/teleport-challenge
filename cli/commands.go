@@ -11,9 +11,9 @@ import (
 )
 
 // rpcTimeout bounds every unary RPC.
-// It matches how long the server's StopJob waits for a killed job to end.
+// Longer than server's 10s StopJob timeout so the server error reaches the CLI
 // The output stream has no timeout because it lasts as long as the job.
-const rpcTimeout = 10 * time.Second
+const rpcTimeout = 15 * time.Second
 
 // start starts args[0] with the remaining args and prints the new job's ID
 func start(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout io.Writer) error {
