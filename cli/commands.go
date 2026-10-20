@@ -15,11 +15,16 @@ import (
 // The output stream has no timeout because it lasts as long as the job.
 const rpcTimeout = 15 * time.Second
 
+// client runs jobctl subcommands against the worker server
+type client struct {
+	c pb.WorkerServiceClient
+}
+
 // start starts args[0] with the remaining args and prints the new job's ID
-func start(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout io.Writer) error {
+func (cl *client) start(ctx context.Context, args []string, stdout io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := c.StartJob(ctx, pb.StartJobRequest_builder{
+	resp, err := cl.c.StartJob(ctx, pb.StartJobRequest_builder{
 		Command: new(args[0]),
 		Args:    args[1:],
 	}.Build())
@@ -31,18 +36,18 @@ func start(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout 
 }
 
 // stop kills a running job and returns once it has ended
-func stop(ctx context.Context, c pb.WorkerServiceClient, args []string, _ io.Writer) error {
+func (cl *client) stop(ctx context.Context, args []string, _ io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	_, err := c.StopJob(ctx, pb.StopJobRequest_builder{JobId: new(args[0])}.Build())
+	_, err := cl.c.StopJob(ctx, pb.StopJobRequest_builder{JobId: new(args[0])}.Build())
 	return err
 }
 
 // jobStatus prints a job's status
-func jobStatus(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout io.Writer) error {
+func (cl *client) jobStatus(ctx context.Context, args []string, stdout io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := c.GetJobStatus(ctx, pb.GetJobStatusRequest_builder{JobId: new(args[0])}.Build())
+	resp, err := cl.c.GetJobStatus(ctx, pb.GetJobStatusRequest_builder{JobId: new(args[0])}.Build())
 	if err != nil {
 		return err
 	}
@@ -51,11 +56,11 @@ func jobStatus(ctx context.Context, c pb.WorkerServiceClient, args []string, std
 
 // logs writes a job's output to stdout from the first byte, following it until the job ends.
 // Output is written as raw bytes in the order received, so binary output passes through unchanged.
-func logs(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout io.Writer) error {
+func (cl *client) logs(ctx context.Context, args []string, stdout io.Writer) error {
 	// Cancelling ends the stream if we return before the server does, e.g. when stdout fails
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := c.StreamJobOutput(ctx, pb.StreamJobOutputRequest_builder{JobId: new(args[0])}.Build())
+	stream, err := cl.c.StreamJobOutput(ctx, pb.StreamJobOutputRequest_builder{JobId: new(args[0])}.Build())
 	if err != nil {
 		return err
 	}

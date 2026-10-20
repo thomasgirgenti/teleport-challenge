@@ -40,14 +40,14 @@ type command struct {
 	summary string
 	minArgs int
 	maxArgs int // -1 for no limit
-	run     func(ctx context.Context, c pb.WorkerServiceClient, args []string, stdout io.Writer) error
+	run     func(cl *client, ctx context.Context, args []string, stdout io.Writer) error
 }
 
 var commands = []command{
-	{"start", "<cmd> [args...]", "Start a job; prints the job ID", 1, -1, start},
-	{"stop", "<job-id>", "Kill a running job (SIGKILL)", 1, 1, stop},
-	{"status", "<job-id>", "Show job status", 1, 1, jobStatus},
-	{"logs", "<job-id>", "Stream output from the start, following until the job ends", 1, 1, logs},
+	{"start", "<cmd> [args...]", "Start a job; prints the job ID", 1, -1, (*client).start},
+	{"stop", "<job-id>", "Kill a running job (SIGKILL)", 1, 1, (*client).stop},
+	{"status", "<job-id>", "Show job status", 1, 1, (*client).jobStatus},
+	{"logs", "<job-id>", "Stream output from the start, following until the job ends", 1, 1, (*client).logs},
 }
 
 // Run runs jobctl with args (without the program name) and returns the process exit code.
@@ -96,7 +96,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	defer conn.Close()
 
-	err = cmd.run(ctx, pb.NewWorkerServiceClient(conn), cmdArgs, stdout)
+	err = cmd.run(&client{c: pb.NewWorkerServiceClient(conn)}, ctx, cmdArgs, stdout)
 	switch {
 	case err == nil:
 		return exitOK
