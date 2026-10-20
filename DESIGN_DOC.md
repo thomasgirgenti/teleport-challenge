@@ -602,7 +602,7 @@ $
 $ jobctl status Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 ID:       Q5ZJ3KXM7TAB2C4VNWHRY6DPLE
 Owner:    alice
-Command:  bash -c 'for i in 1 2 3; do echo "tick $i"; sleep 1; done'
+Command:  ["bash" "-c" "for i in 1 2 3; do echo \"tick $i\"; sleep 1; done"]
 State:    EXITED
 Exit:     0
 Started:  2026-10-09T18:40:01Z

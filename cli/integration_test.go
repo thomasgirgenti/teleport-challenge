@@ -133,7 +133,7 @@ func TestStartLogsStatus(t *testing.T) {
 		t.Errorf("logs = %q, want %q", got, "hello\n")
 	}
 	st := ts.mustRun(t, "alice", "status", id)
-	for _, want := range []string{"ID:       " + id, "Owner:    alice", "Command:  echo hello", "State:    EXITED", "Exit:     0", "Ended:"} {
+	for _, want := range []string{"ID:       " + id, "Owner:    alice", `Command:  ["echo" "hello"]`, "State:    EXITED", "Exit:     0", "Ended:"} {
 		if !strings.Contains(st, want) {
 			t.Errorf("status missing %q:\n%s", want, st)
 		}
