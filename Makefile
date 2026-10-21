@@ -34,6 +34,9 @@ proto:
 build:
 	CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/ ./cmd/...
 
+build-native-cli:
+	go build -o bin/jobctl ./cmd/jobctl
+
 # Generate a development CA, server, and client certs into certs/. Re-running replaces them all.
 certs:
 	go run ./cmd/certgen
