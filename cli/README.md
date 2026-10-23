@@ -9,7 +9,8 @@ go run ./cmd/workerd &  # Linux only
 go run ./cmd/jobctl -h
 ```
 
-`jobctl` itself builds and runs on any OS. `make build` puts it in `bin/jobctl`.
+`jobctl` itself builds and runs on any OS. `make build-native-cli` builds it for your OS into `bin/jobctl` (`make build` builds Linux binaries).
+On macOS, run the server in Docker and `jobctl` natively: see [Running on macOS with Docker](../README.md#running-on-macos-with-docker).
 
 ## Usage
 

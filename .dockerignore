@@ -1,0 +1,11 @@
+# Keep keys and host binaries out of the build context
+certs/
+bin/
+.git/
+.idea/
+.vscode/
+.notes/
+.claude/
+.codex/
+.junie/
+.DS_Store

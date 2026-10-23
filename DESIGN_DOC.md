@@ -21,7 +21,7 @@ In scope:
 Out of scope:
 
 - Persistence - jobs and output live in memory only and are lost when the server restarts.
-- Configuration system - addresses, paths, timeouts, etc. are hardcoded constants.
+- Configuration system - paths, timeouts, etc. are hardcoded constants. Only the server and client addresses are flags (`--addr`).
 - Certificate lifecycle management (PKI).
 - RBAC - users will be able to interact w/ only the jobs they've started/own.
 
@@ -633,7 +633,7 @@ error: unknown certificate authority
 | Area           | Current choice                                        | Production alternative                                                                    |
 |----------------|-------------------------------------------------------|-------------------------------------------------------------------------------------------|
 | Output storage | Unbounded in-memory `[]byte`                          | Chunked buffer, size caps per job, spill to disk, retention and eviction of finished jobs |
-| Configuration  | Hardcoded address, paths, timeouts; minimal CLI flags | Config file and env vars                                                                  |
+| Configuration  | Hardcoded paths, timeouts; minimal flags (`--addr`)   | Config file and env vars                                                                  |
 | AuthZ roles    | None                                                  | Custom cert extension, RBAC with per-command allow-lists                                  |
 | PKI            | Offline dev CA via `make certs`                       | Online CA issuing short-lived certs, revocation, rotation                                 |
 | Isolation      | Process group + `Pdeathsig`                           | cgroups v2 (CPU/memory/IO limits), namespaces, unprivileged uid per job (Level 5)         |

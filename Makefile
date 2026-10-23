@@ -1,6 +1,8 @@
-GO_IMAGE := golang:1.27
+GO_IMAGE  := golang:1.27
+IMAGE     := workerd:dev
+CONTAINER := workerd
 
-.PHONY: test test-linux vet fmt tidy proto build certs
+.PHONY: test test-linux vet fmt tidy proto build build-native-cli certs docker-build docker-run docker-stop
 
 default: fmt tidy proto build test-linux
 
@@ -34,9 +36,28 @@ proto:
 build:
 	CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/ ./cmd/...
 
+# Build jobctl for the host OS, e.g. to talk to workerd running in Docker on macOS
 build-native-cli:
 	go build -o bin/jobctl ./cmd/jobctl
 
 # Generate a development CA, server, and client certs into certs/. Re-running replaces them all.
 certs:
 	go run ./cmd/certgen
+
+# Build the workerd image. See "Running on macOS with Docker" in README.md.
+docker-build:
+	docker build -t $(IMAGE) .
+
+# Run workerd in the foreground with certs/ mounted read-only. Ctrl-C stops it and kills every job.
+# The port is published on host loopback only, so the server isn't reachable from the network.
+# --init forwards signals to workerd and reaps orphaned job processes.
+docker-run: docker-build
+	@test -f certs/server.crt || { echo "certs/ is missing: run 'make certs' first"; exit 1; }
+	docker run --rm --init --name $(CONTAINER) \
+		-p 127.0.0.1:50051:50051 \
+		-v "$(CURDIR)/certs":/app/certs:ro \
+		$(IMAGE)
+
+# Stop the workerd container. SIGTERM, so the server kills its jobs and exits cleanly.
+docker-stop:
+	docker stop $(CONTAINER)
