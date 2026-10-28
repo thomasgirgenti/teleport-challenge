@@ -8,7 +8,9 @@ make certs              # writes a dev CA, server cert, and client certs (alice,
 go run ./cmd/workerd    # serves on 127.0.0.1:50051 until SIGINT/SIGTERM
 ```
 
-The address and cert paths are hardcoded (see `cmd/workerd/main.go`). Linux only.
+`--addr` changes the listen address, e.g. `--addr 0.0.0.0:50051`. The cert paths are hardcoded and relative to the working directory (see `cmd/workerd/main.go`).
+
+Linux only. On macOS, run it in Docker: see [Running on macOS with Docker](../README.md#running-on-macos-with-docker).
 
 On SIGINT/SIGTERM the server kills every job with SIGKILL, so every open output stream ends with `OK`, then stops gracefully.
 Jobs and their output live in memory and are lost when the server stops.
