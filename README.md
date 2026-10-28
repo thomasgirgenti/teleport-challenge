@@ -1,5 +1,7 @@
 # teleport-challenge
-Teleport systems take-home challenge
+Teleport systems take-home [challenge](https://github.com/gravitational/careers/blob/main/challenges/systems/challenge-1.md), targeting level 4.
+
+> Implement a prototype job worker service that provides an API to run arbitrary Linux processes. These processes can be any executable program that is available on the machine running the service.
 
 ## Structure
 This repo is split into 3 main subdirectories:
